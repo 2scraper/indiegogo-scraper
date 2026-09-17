@@ -9,6 +9,68 @@ promise that every flag and default is frozen, so a behaviour-changing
 default can land in one. When that happens it is called out at the top of
 the release notes rather than left to be discovered from a bill or a diff.
 
+## [Unreleased]
+
+> **Correction to v0.1.0's release notes.** They said the 2Captcha balance
+> was "unchanged to five decimal places". That was measured across the four
+> bare-browser runs and is true of them, but it is not true of the session as
+> a whole: the balance moved **$0.0024** over the day, which is Scraping
+> Browser session usage from `--cdp-endpoint` runs. The claim that matters is
+> narrower and now stated that way — 2Captcha's own statistics endpoint
+> reports **0 captcha solves and $0.00000** for the day. A run without
+> `--cdp-endpoint` still costs nothing at all.
+
+### The site has a SECOND captcha, configured but never rendered
+
+Asked plainly which captcha this site uses, and answered by measuring. There
+are two, at different layers:
+
+1. **Cloudflare Turnstile**, in a managed challenge at the edge. This is the
+   one v0.1.0 documents: met, self-cleared, never solved.
+2. **reCAPTCHA Enterprise**, wired into the application and enabled on every
+   page the site serves — site key `6LeRruUr…`, the enterprise loader on
+   **recaptcha.net** (not google.com), and an empty `<captcha-widgets>` mount
+   point. It is never shown to an anonymous reader.
+
+"No challenge rendered" is not "no captcha configured", so the useful
+question was whether this repo would RECOGNISE it. Constructing the shapes
+this site's own captcha would take found two the static detector missed.
+
+### Fixed
+
+- **A rendered enterprise widget went undetected.** The iframe rung matched
+  `recaptcha/api2/anchor`; this site serves `recaptcha/enterprise/anchor`,
+  where the sitekey can be only in the frame's `k=` parameter.
+- **A sitekey inside the site's own `<captcha-*>` mount went undetected.**
+- **`category` is localised and differed BETWEEN MODES.** The same German
+  campaign read `Produktivität` from `--mode search` (the API's localised
+  name) and `Productivity` from `--mode campaign` (a numeric code resolved
+  through an English table).
+- **`pyproject` extras had drifted from `requirements-*.txt`**
+  (`playwright>=1.44` against `>=1.40.0`, `selenium>=4.20` against
+  `>=4.15.0`). CI installs the requirements files, so the drift was invisible.
+- **The offline suite's credential check scanned gitignored files** and
+  failed on a `--dump-html` capture containing a site nonce — a file that
+  cannot be committed. `.github/ci_checks.py` had already learned this;
+  the suite now matches it.
+- **`.gitignore` did not cover this repo's own default output prefixes.**
+
+### Added
+
+- **`category_code`** on `Campaign` — the site's numeric, locale-independent
+  catalogue id. Join on it; `category` is display text.
+- Checks pinning all of the above, each verified to fail when its fix is
+  reverted.
+
+### Verified, not assumed
+
+- `--fingerprint` applies a real user agent, locale and timezone
+  (`de-DE`/`Europe/Berlin` for a German fingerprint — not the `en-DE` bug
+  this family shipped four times).
+- `--concurrency 3` over 6 pages returns 144 rows with unique
+  `(page, position)` and no duplicate skus.
+- `/de/` and `/zh/` each return 48/48 fully populated rows.
+
 ## [0.1.0] — 2026-09-17
 
 First release. Three browser engines, an HTTP-only client, and three modes.
@@ -45,10 +107,8 @@ From a datacentre address (Hetzner, Helsinki, AS24940):
 - A **local headless Chromium returned a full page of results on 4 of 4
   runs** with no key, no proxy and no CDP endpoint. Two of four met the
   Cloudflare challenge first and cleared it on the next navigation
-  themselves. 2Captcha's own statistics endpoint reports **0 solves and
-  $0.00000** for the day. (The account balance moved $0.0024 over the whole
-  session -- Scraping Browser session usage from `--cdp-endpoint` runs, a
-  different product from solving.)
+  themselves: **0 solves attempted, 2Captcha balance unchanged to five
+  decimal places**.
 - The Scraping Browser API and the Scraper API both worked on every attempt.
 - The canary's first dispatch, from a bare GitHub Actions runner with no
   secret configured, returned **72 rows across 3/3 pages** with the first
@@ -60,17 +120,6 @@ From a datacentre address (Hetzner, Helsinki, AS24940):
   full 24 — a real ceiling of **9,984 rows**, binary-searched live.
 - **110 of 432** sampled search rows were campaigns hosted on gamefound.com
   rather than indiegogo.com.
-
-### The site has a SECOND captcha, configured but never rendered
-
-Every served page carries a reCAPTCHA **Enterprise** site key
-(`6LeRruUr...`), the enterprise loader on `recaptcha.net`, and an empty
-`<captcha-widgets>` mount. It is never shown to an anonymous reader, so the
-question is not "did we meet one" but "would we recognise it if it
-appeared". Checking that found two shapes the static detector missed -- a
-rendered enterprise widget's `enterprise/anchor` iframes, and a sitekey
-inside the site's own mount element -- both now detected, with the
-configured-but-unrendered case asserted NOT to read as a challenge.
 
 ### Notes for anyone porting this elsewhere
 
