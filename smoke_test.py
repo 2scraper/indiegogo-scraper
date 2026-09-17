@@ -2244,6 +2244,44 @@ def test_gitignore_covers_own_output():
         assert f"!{needed}" in ignored, f"{needed} must be un-ignored"
 
 
+@check("a pasted proxy-LIST line is bad usage (exit 2), not a crash")
+def test_proxy_list_format_is_usage_error():
+    # The mistake a new user actually makes: a proxy-list line is
+    # scheme://host:port:login:password, and pasting one where a URL belongs
+    # puts the extra colons into the port. proxy_pool validates it and
+    # raises with a message naming the fix -- but nothing caught ProxyError
+    # at the engines' entry point, so it reached the interpreter as a
+    # traceback and exited 1. The family contract says bad usage is 2.
+    for name in ENGINES:
+        eng = _engine(name)
+        if eng is None:
+            continue
+        src = inspect.getsource(eng.main)
+        assert "ProxyError" in src, (
+            f"{name}.main() does not catch ProxyError, so a malformed "
+            f"--proxy exits 1 (crash) instead of 2 (bad usage)")
+        assert "return 2" in src, name
+
+
+@check("a malformed proxy is reported WITHOUT its password")
+def test_proxy_error_masks_the_credential():
+    # An error message is a log. proxy_pool reports mask(line), never the
+    # line: a CI run in this family once printed a live proxy login and
+    # password into its own public log from a traceback nobody expected to
+    # carry a credential.
+    bad = "http://proxy.example.com:1234:someuser-zone-custom:s3cr3tpw"
+    try:
+        proxy_pool.ProxyPool([proxy_pool.parse_proxy_line(bad, "--proxy")])
+    except proxy_pool.ProxyError as e:
+        msg = str(e)
+        assert "s3cr3tpw" not in msg, f"the password is in the message: {msg}"
+        assert "someuser" not in msg, f"the login is in the message: {msg}"
+        assert "proxy.example.com" in msg, (
+            "the host and port are the useful half and should be kept")
+    else:
+        raise AssertionError("a proxy-list line must be refused")
+
+
 # ---------------------------------------------------------------------------
 # Runner
 # ---------------------------------------------------------------------------

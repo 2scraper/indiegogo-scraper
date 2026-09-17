@@ -62,6 +62,43 @@ this site's own captcha would take found two the static detector missed.
 - Checks pinning all of the above, each verified to fail when its fix is
   reverted.
 
+### The proxy path, now exercised live
+
+v0.1.0 shipped with `--proxy` untested against a real gateway -- there was
+no credential to test with. There is now, and the path works, but testing it
+found a defect first.
+
+- **Fixed: a pasted proxy-LIST line exited 1 (crash) instead of 2 (bad
+  usage).** Proxy lists are `scheme://host:port:login:password`; this
+  expects `http://login:password@host:port`, and the extra colons land in
+  the port. `proxy_pool` already validated it and raised with a message
+  naming the fix -- but no engine caught `ProxyError` at its entry point, so
+  it reached the interpreter as a traceback. `proxy_pool`'s own comment said
+  this should be exit 2; now it is, in all three engines, with the password
+  absent from the message.
+
+Measured 2026-09-17 through a 2Captcha residential gateway:
+
+- **The site served content on the FIRST response, with no challenge** --
+  better than the datacentre path, which met one on 2 of 4 runs.
+- **`-region-XX` is honoured**: `de` → Munich (M-net), `us` → Reston (AT&T),
+  `gb` → Glossop (Plusnet), `tr` → Istanbul (Türk Telekom), all residential
+  ISPs. The Scraping Browser's `country-` segment was NOT honoured on the
+  accounts tested (a `country-us` login exited from Turkey), which is worth
+  knowing before trusting either.
+- **One credential mints many exits**: 5 `-session-` logins → 5 distinct
+  addresses (RU, US, US, IN, LK).
+- **`--concurrency 3` gave each worker its own session** and returned 144
+  rows over 6 pages, `(page, position)` unique, status complete.
+- **A dead exit rotates rather than retrying**: a pool with an unreachable
+  entry first reported `ERR_PROXY_CONNECTION_FAILED`, rotated to the next
+  exit and completed with 24 rows -- the "a proxy failure is not a timeout"
+  invariant, exercised rather than asserted.
+- **Selenium's documented limitation confirmed**: it cannot authenticate a
+  proxy, says so, and then legitimately returns 39 bytes and exit 3 where
+  the other two engines returned 24 rows through the same exit.
+- **No credential reached any log** across every run above.
+
 ### Verified, not assumed
 
 - `--fingerprint` applies a real user agent, locale and timezone

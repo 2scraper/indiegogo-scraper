@@ -51,12 +51,29 @@ a browser that runs its JavaScript, and that is what happens here.
 
 What the paid products actually buy:
 
-* **Volume from many addresses.** One address clearing one challenge is very
-  different from one address clearing a hundred. `--proxy-file` plus
-  `--concurrency` is the path, and each worker clears the challenge
-  separately.
-* **A specific country.** The Scraping Browser's `country-` segment picks
-  the exit.
+* **Volume from many addresses, and a cleaner path in.** Measured through a
+  2Captcha residential exit on 2026-09-17: the site returned `state=content`
+  on the **first** response, with no challenge at all — better than the
+  datacentre path, which met one on 2 of 4 runs. One credential mints many
+  session exits (`-session-…`), measured 5 sessions → 5 distinct addresses
+  in RU, US, US, IN and LK. `--proxy-file` plus `--concurrency` is the path,
+  and each worker takes its own exit.
+* **A specific country**, via the residential gateway's `-region-XX`
+  segment. Measured and honoured: `-region-de` → Munich (M-net),
+  `-region-us` → Reston (AT&T), `-region-gb` → Glossop (Plusnet),
+  `-region-tr` → Istanbul (Türk Telekom), all residential ISPs.
+
+  Note the Scraping Browser's `country-` segment did **not** behave the same
+  way on the accounts tested here: a login reading `country-us` exited from
+  Turkey, and `country-de` would not connect. If you need a specific country
+  from that product, verify it rather than trusting the segment.
+
+  For this site it makes no difference to the DATA either way: the same
+  query from a US-era exit and from a Turkish one returned identical page-1
+  ids, identical currencies and the same `totalItemCount`. Indiegogo does
+  not geo-filter results; only `userPreferredLocation` follows the IP, and
+  that is a display field this scraper does not record. The locale is a PATH
+  prefix (`/en/`, `/de/`), set in `--url`.
 * **No browser infrastructure.** `scraper_api_client.py` needs no Chromium
   on your machine at all — only `requests`.
 * **A solver, if the challenge ever stops self-clearing.** The Turnstile
@@ -295,7 +312,16 @@ An `INDIEGOGO_CDP_ENDPOINT` merely sitting in your `.env` is ignored with a
 warning, so that engine stays runnable.
 
 **Selenium's `--proxy-server` cannot authenticate at all.** Credentials are
-stripped and a warning printed.
+stripped and a warning printed — and then the run legitimately fails against
+a gateway that requires auth. Measured: the other two engines returned 24
+rows through the same proxy, Selenium got 39 bytes and exit 3, having said
+so first. Use Playwright or pyppeteer for an authenticated proxy.
+
+**A proxy-list line is not a proxy URL.** Proxy lists are
+`scheme://host:port:login:password`; this expects
+`http://login:password@host:port`. Pasting the first form exits **2 (bad
+usage)** with a message naming the fix, and the password never reaches the
+message or the log.
 
 **`scraper_api_client.py` reads one page**, and that is the site's doing
 rather than the API's: pages 2+ need a POST carrying the cleared session's

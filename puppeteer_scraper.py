@@ -714,6 +714,16 @@ def main(argv=None) -> int:
     args = parse_args(argv)
     try:
         return scrape(args)
+    except ProxyError as e:
+        # A malformed --proxy/--proxy-file entry is BAD USAGE (exit 2), not a
+        # crash (exit 1). proxy_pool validates the value and raises with a
+        # message naming what is wrong -- but nothing caught it here, so the
+        # most likely first-run mistake (pasting a proxy-LIST line, which is
+        # host:port:login:password, where a URL belongs) reached the
+        # interpreter as a traceback and exited 1. proxy_pool's own comment
+        # says this should be exit 2; now it is.
+        logger.error("%s", e)
+        return 2
     except RemoteAPIError as e:
         logger.error("%s", _mask_credentials(str(e)))
         return EXIT_REMOTE_API_ERROR
