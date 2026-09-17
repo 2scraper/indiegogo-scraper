@@ -1470,46 +1470,71 @@ def test_credential_masking():
 
 @check("no credential-shaped string is committed anywhere in the repo")
 def test_no_committed_credentials():
+    # Scans what git TRACKS, not what happens to be lying in the working
+    # tree. The check is about what gets COMMITTED, and a --dump-html
+    # capture is gitignored by design -- a real page dump is full of the
+    # site's own nonces, and one of them (a 32-hex token on a search page)
+    # failed this check for a file that can never reach a commit. A check
+    # that cries wolf on an ignored file is a check people learn to skip.
+    import subprocess
     patterns = [
         (re.compile(r"\b[0-9a-f]{32}\b"), "a 32-hex string reads as a live API key"),
         (re.compile(r"[a-z]+://[^\s/@\"']+:[^\s/@\"']+@"), "inline URL credentials"),
     ]
     allow = ("smoke_test.py", ".env.example", "README.md", "CHANGELOG.md",
              "TROUBLESHOOTING.md")
-    for root, dirs, files in os.walk(HERE):
+    # Every file in the tree EXCEPT the gitignored ones -- deliberately not
+    # `git ls-files`, which lists only what is already tracked and would
+    # therefore miss a brand-new file that `git add -A` is about to commit.
+    # This mirrors .github/ci_checks.py, which had already learned both
+    # halves; reimplementing it here without that knowledge is what produced
+    # the false positive above.
+    files = []
+    for root, dirs, names in os.walk(HERE):
         dirs[:] = [d for d in dirs
                    if d not in (".git", "__pycache__", ".venv", "venv",
                                 "node_modules", ".pytest_cache")]
-        for fn in files:
-            if fn in allow or fn.endswith((".png", ".jpg", ".ico")):
-                continue
-            if fn == ".env":
-                continue          # local-only, gitignored, never committed
-            path = os.path.join(root, fn)
-            try:
-                text = open(path, encoding="utf-8").read()
-            except (UnicodeDecodeError, OSError):
-                continue
-            for rx, why in patterns:
-                for m in rx.finditer(text):
-                    frag = m.group(0)
-                    if "***" in frag or "{" in frag or "user:pass" in frag:
-                        continue
-                    if "example.com" in frag or "SCRUBBED" in frag:
-                        continue
-                    # Documentation placeholders. Named explicitly rather
-                    # than by a loose pattern: a shipped check in a sibling
-                    # repo FAILED on its own main branch because its
-                    # allowlist had drifted, and a check nobody can read is
-                    # a check nobody runs.
-                    if any(ph in frag for ph in ("login:password",
-                                                 "user:pass",
-                                                 "username:password",
-                                                 "something:something",
-                                                 "USER:PASS")):
-                        continue
-                    raise AssertionError(
-                        f"{os.path.relpath(path, HERE)}: {why}: {frag[:40]}")
+        for fn in names:
+            files.append(os.path.relpath(os.path.join(root, fn), HERE))
+    try:
+        proc = subprocess.run(["git", "check-ignore", "--stdin"], cwd=HERE,
+                              input="\n".join(files), capture_output=True,
+                              text=True)
+        ignored = {l.strip() for l in proc.stdout.splitlines() if l.strip()}
+    except OSError:
+        ignored = set()          # not a git checkout; scan everything
+    files = [f for f in files if f not in ignored]
+
+    scanned = 0
+    for rel in files:
+        if os.path.basename(rel) in allow or rel.endswith((".png", ".jpg", ".ico")):
+            continue
+        path = os.path.join(HERE, rel)
+        try:
+            text = open(path, encoding="utf-8").read()
+        except (UnicodeDecodeError, OSError):
+            continue
+        scanned += 1
+        for rx, why in patterns:
+            for m in rx.finditer(text):
+                frag = m.group(0)
+                if "***" in frag or "{" in frag or "user:pass" in frag:
+                    continue
+                if "example.com" in frag or "SCRUBBED" in frag:
+                    continue
+                # Documentation placeholders, named explicitly rather than
+                # by a loose pattern: a shipped check in a sibling repo
+                # FAILED on its own main branch because its allowlist had
+                # drifted.
+                if any(ph in frag for ph in ("login:password", "user:pass",
+                                             "username:password",
+                                             "something:something",
+                                             "USER:PASS")):
+                    continue
+                raise AssertionError(f"{rel}: {why}: {frag[:40]}")
+    assert scanned > 20, (
+        f"only {scanned} files scanned -- the file list is wrong, so this "
+        f"check is passing for the wrong reason")
 
 
 @check("committed fixtures carry no per-project access tokens")
@@ -2011,6 +2036,212 @@ def test_oldest_python_syntax():
     assert not offenders, (
         "syntax newer than the oldest Python this repo claims:\n  "
         + "\n  ".join(offenders))
+
+
+# ---------------------------------------------------------------------------
+# Which captcha this site actually uses
+# ---------------------------------------------------------------------------
+#
+# Asked plainly -- "was there a captcha?" -- and answered by MEASURING rather
+# than by reading this repo's own code. There are TWO, and they are different
+# products at different layers:
+#
+#   1. Cloudflare Turnstile, in a MANAGED CHALLENGE at the edge. This is the
+#      one that gates access: HTTP 403 on 8 routes out of 8 to an HTTP
+#      client. It was MET (2 of 4 bare browser runs) and it SELF-CLEARED on
+#      the next navigation. Never solved, never charged.
+#
+#   2. reCAPTCHA Enterprise, wired into the application itself. Never
+#      rendered to an anonymous reader, but configured and enabled on EVERY
+#      page the site serves:
+#
+#          "reCaptchaProvider":{"siteKey":"6LeRruUr…","isEnabled":true}
+#          "reCaptchaUrl":"https://www.recaptcha.net/recaptcha/enterprise.js"
+#          <captcha-widgets></captcha-widgets>        (an empty mount point)
+#
+# "No challenge rendered" is not "no captcha configured", so the question is
+# not "did we meet one" but "is one configured, and would we recognise it if
+# it appeared". Testing the shapes the site's OWN captcha would take found
+# two the static detector missed -- its rendered ENTERPRISE iframes, and a
+# sitekey inside its own mount element. Both are fixed and pinned below.
+#
+# 2Captcha's own statistics endpoint for the day this was built: 0 solves,
+# $0.00000.
+
+# The site's own reCAPTCHA Enterprise key, from window.__CONFIG__ on every
+# served page. A public client-side key, not a credential -- it is the
+# `sitekey` a solver would be handed, and it is pinned here so that a change
+# to it is a decision rather than a surprise.
+SITE_RECAPTCHA_KEY = "6LeRruUrAAAAAKLag-oVXT2aKXwNP3iXs-AeJcrh"
+SITE_RECAPTCHA_LOADER = "https://www.recaptcha.net/recaptcha/enterprise.js"
+
+
+def _enterprise_page(body: str) -> str:
+    return (f'<html><head><script src="{SITE_RECAPTCHA_LOADER}?render=explicit">'
+            f'</script></head><body>{body}</body></html>')
+
+
+@check("the site's reCAPTCHA is ENTERPRISE, and the loader host is not assumed")
+def test_enterprise_detection_is_host_agnostic():
+    # An enterprise widget solved as ordinary v2 returns a token the site
+    # rejects, so this is not cosmetic. The site loads its enterprise script
+    # from recaptcha.NET, not google.com -- a detector keyed on the host
+    # rather than the path would miss it entirely.
+    assert "recaptcha.net" in SITE_RECAPTCHA_LOADER
+    page = _enterprise_page(
+        f'<div class="g-recaptcha" data-sitekey="{SITE_RECAPTCHA_KEY}"></div>')
+    c = captcha_solver.detect_recaptcha_v3(page, "https://www.indiegogo.com/")
+    assert c is not None, "the site's own widget shape is not detected"
+    assert c.enterprise is True, "detected, but not as enterprise"
+    task = captcha_solver._v2_task_for(c, 0.7)
+    assert task["type"] == "RecaptchaV2EnterpriseTaskProxyless", task["type"]
+
+
+@check("a rendered widget is detected from its iframe alone, enterprise or not")
+def test_iframe_k_parameter_detection():
+    # Once the widget has painted, the sitekey can be ONLY in the frame's
+    # `k=` parameter. This missed before: the rung matched `api2/` and this
+    # site is an enterprise integration, which serves `enterprise/anchor`.
+    for path, ent in (("enterprise", True), ("api2", False)):
+        page = _enterprise_page(
+            f'<iframe src="https://www.recaptcha.net/recaptcha/{path}/anchor'
+            f'?ar=1&k={SITE_RECAPTCHA_KEY}&co=x"></iframe>') if ent else (
+            f'<html><body><iframe src="https://www.google.com/recaptcha/'
+            f'{path}/anchor?k={SITE_RECAPTCHA_KEY}"></iframe></body></html>')
+        c = captcha_solver.detect_recaptcha_v3(page, "https://www.indiegogo.com/")
+        assert c is not None, f"{path} iframe not detected"
+        assert c.sitekey == SITE_RECAPTCHA_KEY, c.sitekey
+        assert c.source == "html:iframe-k", c.source
+
+
+@check("a sitekey inside the site's own <captcha-*> mount is detected")
+def test_custom_mount_detection():
+    page = _enterprise_page(
+        f'<captcha-widgets><div data-sitekey="{SITE_RECAPTCHA_KEY}">'
+        f'</div></captcha-widgets>')
+    c = captcha_solver.detect_recaptcha_v3(page, "https://www.indiegogo.com/")
+    assert c is not None, "the site's own mount element is not searched"
+    assert c.sitekey == SITE_RECAPTCHA_KEY
+    assert c.source == "html:captcha-mount", c.source
+
+
+@check("a configured-but-unrendered captcha is NOT reported as a challenge")
+def test_configured_captcha_is_not_a_challenge():
+    # This is the half that matters more. The site ships its sitekey, its
+    # enterprise loader AND an empty <captcha-widgets> on every page it
+    # serves. Treating any of those as a challenge would make EVERY page a
+    # challenge -- the "marker that matches every page" failure, which is
+    # worse than no marker at all.
+    served_config = _enterprise_page("ordinary page content")
+    assert captcha_solver.detect_recaptcha_v3(
+        served_config, "https://www.indiegogo.com/") is None, (
+        "the enterprise LOADER alone is being read as a challenge")
+    empty_mount = _enterprise_page("<captcha-widgets></captcha-widgets>")
+    assert captcha_solver.detect_recaptcha_v3(
+        empty_mount, "https://www.indiegogo.com/") is None, (
+        "an EMPTY mount point is being read as a challenge")
+    # And the bare tag must never appear in the block-marker set.
+    joined = " ".join(pp.BOT_CHALLENGE_MARKERS).lower()
+    for tag in ("captcha-widgets", "captcha-widget", "recaptcha"):
+        assert tag not in joined, (
+            f"{tag!r} is on every served page; as a marker it would make "
+            f"every page a challenge")
+
+
+@check("no captcha is detected on any page the site really served")
+def test_no_captcha_on_served_fixtures():
+    served = _served_search_html()
+    assert captcha_solver.detect_recaptcha_v3(served, "https://x/") is None
+    assert captcha_solver.detect_turnstile(served, "https://x/") is None
+    assert pp.detect_page_state(served, status=200) == "content"
+
+
+@check("the real Cloudflare challenge is detected, and carries no sitekey")
+def test_turnstile_challenge_has_no_sitekey():
+    # The whole reason the turnstile.render interception exists: Cloudflare
+    # calls render() once and keeps nothing, so a Challenge page publishes
+    # no sitekey anywhere in its markup. A detection with no sitekey must
+    # NOT be turned into a paid task.
+    c = captcha_solver.detect_turnstile(CHALLENGE_HTML, "https://www.indiegogo.com/")
+    assert c is not None, "the real challenge capture is not detected"
+    assert not c.sitekey, (
+        "this capture is a Cloudflare Challenge page; if a sitekey appears "
+        "here the fixture changed, not the site")
+
+
+@check("category_code is locale-independent where the NAME is not")
+def test_category_code_joins_across_locales_and_modes():
+    # Measured on the same German campaign: --mode search reported
+    # "Produktivität" (the API's localised name) and --mode campaign
+    # reported "Productivity" (resolved from the numeric code through an
+    # English-only table). The name is display text; the code is the join
+    # key, and it agrees across both shapes the site publishes.
+    from_search = pp.category_code({"projectCategory": 50,
+                                    "name": "Produktivität"})
+    from_campaign = pp.category_code(50)
+    assert from_search == from_campaign == 50
+    # The names legitimately differ; that is the point of having both.
+    assert pp.category_name({"projectCategory": 50, "name": "Produktivität"}) == "Produktivität"
+    assert pp.category_name(50) == "Productivity"
+    # And a real parse carries it.
+    sp = pp.parse_search_api(SEARCH_API_PAYLOAD, page_index=0, sort="default")
+    assert all(r.category_code is not None for r in sp.rows), (
+        "category_code is null on a real fixture")
+    for r in sp.rows:
+        assert isinstance(r.category_code, int)
+
+
+@check("category is documented as display text, not a join key")
+def test_category_is_marked_display_text():
+    src = inspect.getsource(ow)
+    assert "category_code" in src
+    assert "localised" in src.lower() or "display text" in src.lower(), (
+        "the Campaign.category docstring must say it varies by locale")
+
+
+@check("pyproject extras and requirements-*.txt name the same versions")
+def test_dependency_pins_in_sync():
+    # CI installs from the requirements files, so a drift in pyproject goes
+    # unnoticed until someone `pip install .[playwright]`s and silently gets
+    # a different version than the README told them to expect. This drifted
+    # on the first audit of this repo.
+    try:
+        import tomllib
+    except ImportError:          # 3.9/3.10 have no tomllib
+        SKIPPED.append("dependency-pin check (tomllib needs 3.11+)")
+        return
+    data = tomllib.load(open(os.path.join(HERE, "pyproject.toml"), "rb"))
+    extras = data["project"]["optional-dependencies"]
+    for extra, engine in (("playwright", "playwright"),
+                          ("puppeteer", "pyppeteer"),
+                          ("selenium", "selenium")):
+        path = os.path.join(HERE, f"requirements-{extra}.txt")
+        pins = []
+        for line in open(path, encoding="utf-8"):
+            line = line.split("#")[0].strip()
+            if line.lower().startswith(engine):
+                pins.append(line)
+        assert pins, f"{path} names no {engine} pin"
+        assert extras[extra] == [pins[0]], (
+            f"pyproject [{extra}] is {extras[extra]} but {path} says "
+            f"{pins[0]!r}")
+
+
+@check("the repo ignores its own default output files")
+def test_gitignore_covers_own_output():
+    # A scraper's output is large, machine-specific and stale by the time
+    # anyone reads it. The default --out prefix of every entry point has to
+    # be covered, or a routine run leaves the working tree dirty.
+    ignored = open(os.path.join(HERE, ".gitignore"), encoding="utf-8").read()
+    for engine in ENGINES:
+        src = open(os.path.join(HERE, f"{engine}.py"), encoding="utf-8").read()
+        m = re.search(r'add_argument\(\s*"--out",\s*default="([^"]+)"', src)
+        assert m, f"{engine} has no --out default to check"
+        prefix = m.group(1)
+        assert prefix in ignored, (
+            f"{engine}'s default --out prefix {prefix!r} is not in .gitignore")
+    for needed in ("sample_output.json", "sample_output.csv"):
+        assert f"!{needed}" in ignored, f"{needed} must be un-ignored"
 
 
 # ---------------------------------------------------------------------------

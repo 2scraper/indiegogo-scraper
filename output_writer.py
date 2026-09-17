@@ -101,7 +101,11 @@ class Campaign:
     # e-commerce members of this family carry: the two sources genuinely
     # disagree in the last two decimal places, and a diff between an api-read
     # run and a dom-read run would otherwise report every row as changed.
-    category: Optional[str] = None     # the site's own catalogue category name
+    # The site's own catalogue category NAME, as the fetched page spelled
+    # it. This is DISPLAY TEXT and it is localised: the same campaign reads
+    # "Board & card games" on /en/, "Brett- & Kartenspiele" on /de/ and
+    # "交通" on /zh/. Do not join on it -- join on `category_code`.
+    category: Optional[str] = None
     price_source: Optional[str] = None
 
     # ---- Indiegogo-specific, appended so the family prefix above is stable ----
@@ -113,6 +117,19 @@ class Campaign:
     # column, and --mode campaign refuses a row that does not carry
     # "indiegogo".
     platform: Optional[str] = None
+    # The site's numeric catalogue-category id. Locale-independent, and the
+    # thing to join or group on.
+    #
+    # It exists because `category` alone was measurably inconsistent BETWEEN
+    # MODES on a non-English locale: the search API publishes the localised
+    # name, while a campaign page publishes only this number, which
+    # product_parser resolves through an English-only table harvested from
+    # an /en/ run. The same German campaign therefore came back as
+    # "Produktivität" from --mode search and "Productivity" from --mode
+    # campaign. Rather than pick a language and throw the other away, the
+    # id is carried alongside the text and the text is documented as
+    # display-only.
+    category_code: Optional[int] = None
     sort: Optional[str] = None         # the ordering this row was sampled under
     page: Optional[int] = None         # which listing page (1-based, as printed)
     position: Optional[int] = None     # position within the whole run (1-based)

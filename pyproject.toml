@@ -37,9 +37,9 @@ Issues = "https://github.com/2scraper/indiegogo-scraper/issues"
 # wanted. A sibling repo ended up with pyppeteer 0.0.25 -- a stub -- that way,
 # and CI was green against a version the repo does not support.
 [project.optional-dependencies]
-playwright = ["playwright>=1.44"]
+playwright = ["playwright>=1.40.0"]
 puppeteer = ["pyppeteer>=1.0.2"]
-selenium = ["selenium>=4.20"]
+selenium = ["selenium>=4.15.0"]
 
 [tool.setuptools]
 # Listed EXPLICITLY. This is a flat collection of scripts rather than a

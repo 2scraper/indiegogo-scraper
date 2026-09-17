@@ -45,8 +45,10 @@ From a datacentre address (Hetzner, Helsinki, AS24940):
 - A **local headless Chromium returned a full page of results on 4 of 4
   runs** with no key, no proxy and no CDP endpoint. Two of four met the
   Cloudflare challenge first and cleared it on the next navigation
-  themselves: **0 solves attempted, 2Captcha balance unchanged to five
-  decimal places**.
+  themselves. 2Captcha's own statistics endpoint reports **0 solves and
+  $0.00000** for the day. (The account balance moved $0.0024 over the whole
+  session -- Scraping Browser session usage from `--cdp-endpoint` runs, a
+  different product from solving.)
 - The Scraping Browser API and the Scraper API both worked on every attempt.
 - The canary's first dispatch, from a bare GitHub Actions runner with no
   secret configured, returned **72 rows across 3/3 pages** with the first
@@ -58,6 +60,17 @@ From a datacentre address (Hetzner, Helsinki, AS24940):
   full 24 — a real ceiling of **9,984 rows**, binary-searched live.
 - **110 of 432** sampled search rows were campaigns hosted on gamefound.com
   rather than indiegogo.com.
+
+### The site has a SECOND captcha, configured but never rendered
+
+Every served page carries a reCAPTCHA **Enterprise** site key
+(`6LeRruUr...`), the enterprise loader on `recaptcha.net`, and an empty
+`<captcha-widgets>` mount. It is never shown to an anonymous reader, so the
+question is not "did we meet one" but "would we recognise it if it
+appeared". Checking that found two shapes the static detector missed -- a
+rendered enterprise widget's `enterprise/anchor` iframes, and a sitekey
+inside the site's own mount element -- both now detected, with the
+configured-but-unrendered case asserted NOT to read as a challenge.
 
 ### Notes for anyone porting this elsewhere
 

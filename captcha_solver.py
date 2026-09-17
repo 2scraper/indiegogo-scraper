@@ -349,6 +349,63 @@ def detect_recaptcha_v3(html: str, page_url: str) -> Optional[CaptchaChallenge]:
             enterprise=enterprise,
         )
 
+    # A RENDERED WIDGET'S OWN IFRAME. Once reCAPTCHA has painted, the sitekey
+    # is in the frame's `k=` query parameter and may be NOWHERE else in the
+    # markup -- there is no `data-sitekey` left to find, and on a page that
+    # never inlined `grecaptcha` the bail-out below would discard it.
+    #
+    # Both spellings are covered on purpose. The ordinary widget serves
+    # `/recaptcha/api2/anchor`; the ENTERPRISE one serves
+    # `/recaptcha/enterprise/anchor`, and indiegogo.com is an enterprise
+    # integration -- its own config names
+    # `https://www.recaptcha.net/recaptcha/enterprise.js`. Matching only the
+    # api2 spelling would have left this repo blind to the one widget this
+    # site would actually render. Found by constructing the shapes this
+    # site's OWN captcha would take and checking each against the detector,
+    # rather than by reading the code.
+    frame = re.search(
+        r'<iframe[^>]+src=["\'][^"\']*recaptcha/(?:api2|enterprise)/'
+        r'(?:anchor|bframe)[^"\']*[?&]k=([\w-]{20,})',
+        html, re.I)
+    if frame:
+        # A bframe present settles the variant as a v2 challenge: v3 renders
+        # no challenge frame at all. The heuristic that skipped this rung
+        # cost a sibling repo a real solve -- ERROR_CAPTCHA_UNSOLVABLE after
+        # 87 seconds, paid for, because a frame with no `size` fell through
+        # to v3.
+        invisible = re.search(r'[?&]size=invisible', html, re.I) is not None
+        return CaptchaChallenge(
+            kind="recaptcha_v2_invisible" if invisible else "recaptcha_v2",
+            sitekey=frame.group(1),
+            page_url=page_url,
+            enterprise=_is_enterprise_html(html),
+            source="html:iframe-k",
+        )
+
+    # THE SITE'S OWN CUSTOM MOUNT ELEMENT. indiegogo.com ships
+    # `<captcha-widgets></captcha-widgets>` on every page it serves -- empty
+    # to an anonymous reader, and a container once something needs solving.
+    # The element name is matched as a PREFIX (`<captcha-`) because the exact
+    # tag differs between sites in this family (`captcha-widget`,
+    # `captcha-widgets`), and the key is taken from any descendant rather
+    # than from the mount itself.
+    #
+    # The bare TAG is deliberately not a marker: it is on every good page,
+    # so treating its presence as a challenge would make every page a
+    # challenge. Only a sitekey found INSIDE one counts.
+    mount = re.search(r'<captcha-[\w-]*[^>]*>(.{0,4000}?)</captcha-[\w-]*>',
+                      html, re.I | re.S)
+    if mount:
+        inner = re.search(r'data-sitekey=["\']([\w-]{20,})["\']', mount.group(1))
+        if inner:
+            return CaptchaChallenge(
+                kind="recaptcha_v2",
+                sitekey=inner.group(1),
+                page_url=page_url,
+                enterprise=_is_enterprise_html(html),
+                source="html:captcha-mount",
+            )
+
     if "grecaptcha" not in html:
         return None
 

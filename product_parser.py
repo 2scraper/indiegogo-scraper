@@ -612,6 +612,24 @@ CATEGORY_BY_CODE = {
 }
 
 
+def category_code(value: Any) -> Optional[int]:
+    """The site's numeric catalogue-category id, whichever shape arrived.
+
+    The search API publishes a dict carrying `projectCategory`; a campaign
+    page publishes the bare int. Both give the same number for the same
+    campaign, which is exactly why it -- and not the localised name -- is
+    what a consumer should join on.
+    """
+    if isinstance(value, dict):
+        code = value.get("projectCategory")
+        return code if isinstance(code, int) and not isinstance(code, bool) else None
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    return None
+
+
 def category_name(value: Any) -> Optional[str]:
     """Resolve whichever shape of catalogue category the site handed us.
 
@@ -739,6 +757,7 @@ def _campaign_from_api_item(it: Dict[str, Any], *, page: int, position: int,
         price=raised,
         currency=currency_from_symbol(it.get("currencySymbol")),
         category=category or category_name(it.get("catalogCategory")),
+        category_code=category_code(it.get("catalogCategory")),
         price_source="api",
         platform=platform,
         sort=sort,
@@ -1001,6 +1020,7 @@ def parse_campaign(html: str, *, url: str = "", sort: Optional[str] = None,
         price=raised,
         currency=iso,
         category=category_name(project.get("catalogCategory")),
+        category_code=category_code(project.get("catalogCategory")),
         price_source="detail",
         platform="indiegogo",
         sort=sort,

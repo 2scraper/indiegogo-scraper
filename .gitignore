@@ -19,6 +19,9 @@ canary_run.*
 # --- debug artifacts the engines drop next to themselves -------------------
 # Written on purpose when a page yields nothing or comes back blocked, and by
 # --dump-html on success too. Large, and stale within hours.
+indiegogo_projects.*
+indiegogo_projects_scraperapi.*
+live_results/
 *_debug.html
 *_debug.png
 *.html.page*
@@ -72,3 +75,14 @@ env/
 .env
 *.key
 secrets*
+
+# Any .env variant, however it was renamed. `.env` alone is not enough, and
+# this is not hypothetical twice over: a sibling repo committed a `.env.hold`
+# made while testing, with a live key in it, and being private is the only
+# reason that was recoverable — and on 2026-09-17 this repo had an untracked
+# `.env.bak` holding a 32-hex key, in a PUBLIC repository, one `git add -A`
+# away from being published. This repo's own credential scan caught that file
+# locally, which is the guard working; the pattern below is what stops it
+# reaching a commit in the first place.
+.env*
+!.env.example

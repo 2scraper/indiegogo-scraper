@@ -78,7 +78,7 @@ python3 playwright_scraper.py --pages 3 \
 ```
 
 `sku` `title` `url` `image_url` `price` (funds raised) `currency` `category`
-`platform` `sort` `page` `position` `creator` `creator_url` `goal`
+`category_code` `platform` `sort` `page` `position` `creator` `creator_url` `goal`
 `pct_funded` `backers_count` `followers_count` `campaign_start`
 `campaign_end` `days_left` `phase_label` `phase` `outcome_code`
 `funded_in_seconds` `short_description` `tags`
@@ -244,10 +244,32 @@ for the XHR that fetches later ones, so the two routes cannot drift.
 ### Locales
 
 Nine, as path prefixes on one host: `en it fr de pl es cs pt zh`. Taken from
-the site's own `hreflang` set. Number formatting is identical on `/en/` and
-`/de/`; the countdown text is translated, which is one more reason the
-absolute `campaign_end` is what this scraper records. Phase labels were
-observed **untranslated** on `/de/`.
+the site's own `hreflang` set. Measured live on `/en/`, `/de/` and `/zh/` —
+48/48 rows fully populated on each, identical currencies.
+
+What is and is not translated is worth knowing before you compare runs:
+
+| | `/en/` | `/de/` | `/zh/` |
+|---|---|---|---|
+| number formatting | `12,576` | `12,576` | `12,576` |
+| `category` | Board & card games | Brett- & Kartenspiele | 交通 |
+| `phase_label` | Crowdfunding | Crowdfunding | 众筹 |
+| countdown text (card) | 29 days left | 29 Tage verbleiben | — |
+
+So **`category` and `phase_label` are display text**, and `/de/` happens to
+leave phase labels in English while `/zh/` translates them. Two consequences:
+
+* Join and group on **`category_code`**, the site's own numeric id, which is
+  locale-independent. `category` exists for reading.
+* This matters across modes as well as locales: the search API publishes the
+  localised category *name*, while a campaign page publishes only the
+  *number*, which this parser resolves through an English table. The same
+  German campaign therefore reads `Produktivität` from `--mode search` and
+  `Productivity` from `--mode campaign` — measured, and the reason
+  `category_code` exists.
+
+The countdown is one more reason the absolute `campaign_end` is what this
+scraper records rather than the rendered "days left".
 
 ---
 
@@ -288,14 +310,50 @@ on `urllib3`. Use a virtualenv per engine if you need more than one.
 
 ## Captchas
 
-The only challenge this site serves is a **Cloudflare managed challenge**
-carrying a **Turnstile**. 2Captcha solves those with
-`TurnstileTaskProxyless`, and this repo implements that path.
+There are **two**, and they are different products at different layers.
 
-It was not needed in any run measured here — the browser cleared the
-challenge itself, 4 times out of 4, and **$0.00 was spent**. That is a
-measurement, not a guarantee, so the path is wired and tested rather than
-omitted.
+### 1. Cloudflare Turnstile — the one that gates access
+
+A **managed challenge** at the edge. This is what answers an HTTP client
+with 403 on every route. It was met (2 of 4 bare browser runs) and it
+**cleared itself on the next navigation**. 2Captcha solves these with
+`TurnstileTaskProxyless` and this repo implements that path, but it was not
+needed in any run measured here.
+
+**Cost of solving, measured:** 2Captcha's own statistics endpoint reports
+**0 solves and $0.00000** for the day this repo was built. (The account
+balance did move by $0.0024 over the session — that is Scraping Browser
+session usage from `--cdp-endpoint` runs, which is a different product from
+solving. Runs without `--cdp-endpoint` cost nothing at all.)
+
+### 2. reCAPTCHA Enterprise — configured, but never rendered to a reader
+
+Every page the site serves carries this, whether or not anything is
+challenged:
+
+```
+"reCaptchaProvider":{"siteKey":"6LeRruUr…","isEnabled":true}
+"reCaptchaUrl":"https://www.recaptcha.net/recaptcha/enterprise.js"
+<captcha-widgets></captcha-widgets>          ← an empty mount point
+```
+
+So the site has reCAPTCHA Enterprise wired and enabled — presumably for
+sign-in, sign-up and pledge flows — and simply does not render it to an
+anonymous visitor reading listings. **"No challenge rendered" is not "no
+captcha configured."** The useful question is therefore not "did we meet
+one" but "is one configured, and would this scraper recognise it if it
+appeared".
+
+Checking that found two shapes the static detector missed, both now fixed
+and pinned: a **rendered enterprise widget's iframes** (the site loads
+`enterprise/anchor`, not the ordinary `api2/anchor`, and the sitekey can be
+only in the frame's `k=` parameter), and a **sitekey inside the site's own
+`<captcha-widgets>` mount**. The loader host matters too — this site uses
+`recaptcha.net`, not `google.com`, so detection keys on the path.
+
+Equally important, and asserted: the site key, the enterprise loader and the
+empty mount are **not** treated as a challenge. They are on every good page,
+and a marker that matches every page is worse than no marker at all.
 
 One thing worth knowing if you ever debug it: **a Cloudflare Challenge page
 publishes no sitekey anywhere in its markup.** Cloudflare calls
