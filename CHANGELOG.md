@@ -48,6 +48,10 @@ From a datacentre address (Hetzner, Helsinki, AS24940):
   themselves: **0 solves attempted, 2Captcha balance unchanged to five
   decimal places**.
 - The Scraping Browser API and the Scraper API both worked on every attempt.
+- The canary's first dispatch, from a bare GitHub Actions runner with no
+  secret configured, returned **72 rows across 3/3 pages** with the first
+  response already unchallenged — a second, independent network position
+  agreeing with the first.
 - **Zero JSON-LD blocks** on four page kinds.
 - The search result set is **capped**: the site reports 10,000 matches
   across 417 pages, but pageIndex 416 returns nothing while 415 returns a

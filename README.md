@@ -38,6 +38,12 @@ most sites treat worst.
 | 2Captcha Scraping Browser API (`--cdp-endpoint`) | Worked on every attempt. |
 | 2Captcha Scraper API (`scraper_api_client.py`) | HTTP 200, 137,504 bytes, inlined results payload present, zero challenge markers. |
 
+And from a **second, independent network position** — a bare GitHub Actions
+runner, no secret of any kind configured — the canary's first dispatch
+returned **72 rows across 3/3 pages, `status: complete`**, with the first
+response already `state=content` (no challenge at all). Two different
+datacentre networks, same answer.
+
 So the honest summary is: **an HTTP client cannot read this site at all, and
 a real browser can — including from a datacentre IP, and including through
 the challenge.** Cloudflare's managed challenge is designed to be cleared by
