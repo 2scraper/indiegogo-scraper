@@ -119,6 +119,11 @@ Measured 2026-09-17 through a 2Captcha residential gateway:
   `(page, position)` and no duplicate skus.
 - `/de/` and `/zh/` each return 48/48 fully populated rows.
 
+- `SECURITY.md` said this project has no releases or version tags; it has
+  both. "Supported versions" now names the latest release and `main`.
+- `captcha_solver.py`'s docstring pointed at a "No DataDome solver" section
+  that does not exist in this repo (it came with the copied core). Removed.
+
 ## [0.1.0] — 2026-09-17
 
 First release. Three browser engines, an HTTP-only client, and three modes.
