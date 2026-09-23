@@ -2317,6 +2317,47 @@ def test_x_debug_header_is_redacted():
     assert wired, "the log line does not call the redactor"
 
 
+@check("Scraper API: --wait-text sends waitFor as an OBJECT (a JSON string is HTTP 422 "
+       "and still billed, measured 2026-09-23), and the target status handed onward is "
+       "http_code (403, an int), not the API's own 'success' verdict")
+def test_scraper_api_waitfor_object_and_http_code():
+    """Drives the real fetch_html with requests.post replaced, so no network
+    and no money. Measured 2026-09-23 against the live Scraper API: the
+    string form of waitFor is refused (422, billed), and the response's
+    `status` is the API's verdict while the target's code is `http_code`."""
+    import argparse
+    import scraper_api_client as sac
+    captured = {}
+
+    class _Resp:
+        status_code = 200
+        headers = {}
+        text = ""
+
+        def json(self):
+            return {"status": "success", "http_code": 403, "body": "<html></html>"}
+
+    def _fake_post(url, **kw):
+        captured["json"] = kw.get("json")
+        return _Resp()
+
+    real_post = sac.requests.post
+    sac.requests.post = _fake_post
+    try:
+        args = argparse.Namespace(key="k", cdp_url=None, wait_text="solar",
+                                  wait_element=None, wait_state=None)
+        result = sac.fetch_html(
+            args, "https://www.indiegogo.com/en/projects/search?term=solar", 60)
+    finally:
+        sac.requests.post = real_post
+    wf = (captured.get("json") or {}).get("waitFor")
+    assert isinstance(wf, dict) and wf.get("text") == "solar", \
+        f"waitFor must be a dict, got {type(wf).__name__}: {wf!r}"
+    status = result[1]
+    assert type(status) is int and status == 403, \
+        f"status handed onward must be the int 403 from http_code, got {status!r}"
+
+
 def main():
     print(f"Running {len(CHECKS)} checks for indiegogo-scraper\n")
     for run in CHECKS:
