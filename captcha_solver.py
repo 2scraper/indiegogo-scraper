@@ -65,8 +65,6 @@ state is worth money at all. In particular a `blocked` page with no widget
 on it is never sent to the solver: "unsolvable" is a property of a PAGE, and
 a page with no widget is one.
 
-There is deliberately no DataDome path here. See "No DataDome solver" below.
-
 Flow:
   1. Both detectors run and are reconciled (see reconcile_detections) to decide
      the variant: v3, v2-invisible or v2-checkbox. The parameters differ per

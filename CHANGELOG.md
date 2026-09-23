@@ -55,6 +55,17 @@ this site's own captcha would take found two the static detector missed.
   the suite now matches it.
 - **`.gitignore` did not cover this repo's own default output prefixes.**
 
+- **Leftovers from the repo this one was bootstrapped from.** `.gitignore`
+  listed transfermarkt-scraper's `transfermarkt_products.*` output prefixes
+  (this repo's own `indiegogo_projects.*` was already listed) and described
+  `sample_output.*` as a `--mode market-values` run; it is `--mode search`.
+  `tools/waf_probe.sh` and `tools/verify_browser_api.sh` were transfermarkt's
+  AWS WAF probes — transfermarkt URLs, `TRANSFERMARKT_*` variables that this
+  repo's loader does not read, and a `--mode market-values` this repo does
+  not have. Nothing referenced either, and this site's gate is a Cloudflare
+  managed challenge rather than AWS WAF, so they are removed rather than
+  ported.
+
 ### Added
 
 - **`category_code`** on `Campaign` — the site's numeric, locale-independent
@@ -107,6 +118,11 @@ Measured 2026-09-17 through a 2Captcha residential gateway:
 - `--concurrency 3` over 6 pages returns 144 rows with unique
   `(page, position)` and no duplicate skus.
 - `/de/` and `/zh/` each return 48/48 fully populated rows.
+
+- `SECURITY.md` said this project has no releases or version tags; it has
+  both. "Supported versions" now names the latest release and `main`.
+- `captcha_solver.py`'s docstring pointed at a "No DataDome solver" section
+  that does not exist in this repo (it came with the copied core). Removed.
 
 ## [0.1.0] — 2026-09-17
 
