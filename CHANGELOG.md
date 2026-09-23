@@ -55,6 +55,17 @@ this site's own captcha would take found two the static detector missed.
   the suite now matches it.
 - **`.gitignore` did not cover this repo's own default output prefixes.**
 
+- **Leftovers from the repo this one was bootstrapped from.** `.gitignore`
+  listed transfermarkt-scraper's `transfermarkt_products.*` output prefixes
+  (this repo's own `indiegogo_projects.*` was already listed) and described
+  `sample_output.*` as a `--mode market-values` run; it is `--mode search`.
+  `tools/waf_probe.sh` and `tools/verify_browser_api.sh` were transfermarkt's
+  AWS WAF probes — transfermarkt URLs, `TRANSFERMARKT_*` variables that this
+  repo's loader does not read, and a `--mode market-values` this repo does
+  not have. Nothing referenced either, and this site's gate is a Cloudflare
+  managed challenge rather than AWS WAF, so they are removed rather than
+  ported.
+
 ### Added
 
 - **`category_code`** on `Campaign` — the site's numeric, locale-independent

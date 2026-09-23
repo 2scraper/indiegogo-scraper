@@ -7,12 +7,10 @@
 *.json
 *.csv
 !package.json
-# Committed on purpose: a real excerpt of a real run (--mode market-values),
+# Committed on purpose: a real excerpt of a real run (--mode search),
 # so a reader can see the exact output shape without installing anything.
 !sample_output.json
 !sample_output.csv
-transfermarkt_products.*
-transfermarkt_products_*.*
 # The canary workflow's own run, and anyone reproducing it locally.
 canary_run.*
 
