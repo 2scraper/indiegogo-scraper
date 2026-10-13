@@ -479,6 +479,10 @@ def parse_args():
     p.add_argument("--dump-html", default=None,
                    help="Save the exact HTML the parser is given (always, even on success)")
     args = p.parse_args()
+    if args.key:
+        print("warning: --key puts the API key in this process's argv, where "
+              "anything that can run `ps` can read it, and in shell history. "
+              "Set TWOCAPTCHA_KEY in .env instead.", file=sys.stderr)
     # This client uses --key rather than --twocaptcha-key, so the env
     # mapping is spelled out instead of defaulted -- same pattern this
     # family's mediamarkt-scraper uses for its own scraper_api_client.py.

@@ -187,6 +187,11 @@ everything the site will serve. It is also a **sample**. The sidecar records
 `total_results`, `pages_available`, `capped_by_site` and `reachable_max` so
 a consumer can tell, and `diff_runs.py` says so before diffing.
 
+To read it: `capped_by_site: true` means the run holds a sample of what
+the query matched, however many pages it fetched. `pages_completed` against
+`pages_available` says how much of the *reachable* list the run covered, and
+`reachable_max` is the most rows the site will ever serve for it.
+
 A narrower query is not capped: `?term=solar` reported 801 matches with
 `hasCappedResults: false`.
 

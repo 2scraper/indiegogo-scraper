@@ -748,6 +748,10 @@ def test_pct_funded_guards():
     assert pp.pct_funded(100.0, 0) is None
     assert pp.pct_funded(None, 100.0) is None
     assert pp.pct_funded(12576.05, 12000.0) == 104.8
+    # A real campaign (Aethersworn, 2026-10-12): 10,000 raised against a goal
+    # of 900,000,000 is 0.0 after rounding. It is a figure, not a missing
+    # value, and the daily canary once failed for six days by treating it as one.
+    assert pp.pct_funded(10000.0, 900000000.0) == 0.0
 
 
 @check("days_left is computed from the absolute end, not the localised card")
