@@ -11,6 +11,19 @@ the release notes rather than left to be discovered from a bill or a diff.
 
 ## [Unreleased]
 
+### Fixed
+- The daily canary was red from 2026-10-07 to 2026-10-12 although the run
+  itself was healthy (72 rows, `complete`, 3 of 3 pages). Its sanity check
+  rejected `pct_funded <= 0`, and a real campaign that raised 10,000 against
+  a goal of 900,000,000 rounds to 0.0. The check now fails on a negative
+  percentage, or one computed from a goal that is not positive; zero is a
+  figure. The parser was right and is unchanged, with a check pinning the case.
+
+### Changed
+- `scraper_api_client.py` warns on stderr when the key is passed with `--key`
+  (visible to `ps`, kept in shell history). `TWOCAPTCHA_KEY` in `.env` is
+  unchanged and remains the documented way.
+
 > **Correction to v0.1.0's release notes.** They said the 2Captcha balance
 > was "unchanged to five decimal places". That was measured across the four
 > bare-browser runs and is true of them, but it is not true of the session as
