@@ -78,7 +78,10 @@ CREDENTIAL_ALLOWED = ("USER:PASS", "user:pass", "ACCOUNT:PASSWORD",
 HEX32 = re.compile(r"\b[0-9a-f]{32}\b")
 HEX32_ALLOWED = ("sha", "hash", "nonce", "example", "md5", "digest", "checksum")
 
-SCANNED_SUFFIXES = (".py", ".md", ".txt", ".yml", ".yaml", ".example")
+# `.json`/`.csv` too: the sample outputs and any fixture are captured page
+# data, which is exactly where a front-end key would arrive.
+SCANNED_SUFFIXES = (".py", ".md", ".txt", ".yml", ".yaml", ".example",
+                    ".json", ".csv", ".toml", ".cfg", ".sh")
 
 
 def git_ignored(paths):
@@ -125,7 +128,7 @@ def git_ignored(paths):
 # into pip's vendored code and flags a 32-hex string in `_elffile.py` as
 # key-shaped. Correct about the string, wrong about the file — and it is the
 # FIRST thing a new user sees from `python3 smoke_test.py`. A guard people
-# have to argue with is one they learn to suppress (CLAUDE.md §22).
+# have to argue with is one they learn to suppress.
 #
 # Deliberately NOT a narrowing of what gets scanned: an untracked file is
 # still read, because a key pasted into a scratch file beside the scripts is
@@ -157,8 +160,13 @@ def scanned_files():
     for path in sorted(REPO.rglob("*")):
         if not path.is_file() or path.suffix not in SCANNED_SUFFIXES:
             continue
+        # RELATIVE parts only. `path.parts` includes every ancestor of the
+        # clone, so a checkout that happened to live under a directory named
+        # `venv` (or `.venv`) matched here for every file and the scan read
+        # nothing at all -- and then printed "0 files scanned, nothing
+        # credential-shaped", which reads as a pass.
         if any(part in {".git", "__pycache__", ".venv", "venv"}
-               for part in path.parts):
+               for part in path.relative_to(REPO).parts):
             continue
         candidates.append(path)
 
@@ -274,6 +282,11 @@ def secret_check():
                 failed.append(f"{rel}:{lineno} contains {match[:6]}… — a "
                               f"32-char hex string, the shape of a 2captcha key")
 
+    if scanned == 0:
+        # A scan that read nothing has proved nothing; say so as a failure
+        # rather than as "clean".
+        failed.append("0 files scanned -- the credential scan read nothing, "
+                      "so it cannot vouch for this tree")
     if not failed:
         print(f"ok       {scanned} files scanned, nothing credential-shaped")
     return failed

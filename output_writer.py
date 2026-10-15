@@ -11,9 +11,8 @@ additionally list REWARDS: the individual perks a backer can buy, each with
 its own price and stock. Those are different objects, and folding them into
 one dataclass would leave `remaining_stock`/`estimated_delivery` permanently
 null on every campaign row and `backers_count`/`campaign_end` permanently
-null on every reward row — the exact column CLAUDE.md's family rule says
-should not exist ("a column that is null on every row of every run should
-not exist"). So there are two row classes, the way amazon-scraper added a
+null on every reward row — and a column that is null on every row of every
+run should not exist. So there are two row classes, the way amazon-scraper added a
 second (`Review`) and transfermarkt-scraper a second (`Transfer`):
 
     Campaign   --mode search, campaign
@@ -54,8 +53,11 @@ diff_runs.py refuses to compare two runs whose rows disagree about it —
 the same reasoning bbb-scraper applied to its own result ordering.
 """
 
+import contextlib
 import csv
 import json
+import os
+import tempfile
 from dataclasses import dataclass, asdict, field, fields
 from datetime import datetime, timezone
 from typing import Optional, List, Set, Sequence, Any, Type
@@ -286,21 +288,110 @@ def _csv_value(v: Any) -> Any:
     return v
 
 
+@contextlib.contextmanager
+def _atomic(path: str, newline: Optional[str] = None):
+    """Write to a temporary file beside `path`, then rename over it.
+
+    `open(path, "w")` truncates before a single byte is written, so a crash,
+    a kill or a full disk halfway through `json.dump` leaves a SHORTER file
+    where a complete one was -- measured here before the fix: a good 852-byte
+    `out.json` came back as 12 bytes of invalid JSON after an interrupted
+    write, and a 434-byte CSV came back empty. The previous good run was
+    destroyed by the attempt to replace it rather than by its outcome.
+
+    The temporary file goes in the SAME directory on purpose: `os.replace`
+    is only atomic within one filesystem, and a temp file under /tmp can be
+    on another one, where the rename degrades to an interruptible copy.
+    `fsync` before the rename makes the content durable, not merely visible.
+    """
+    directory = os.path.dirname(os.path.abspath(path)) or "."
+    handle = tempfile.NamedTemporaryFile(
+        mode="w", encoding="utf-8", newline=newline, dir=directory,
+        prefix=os.path.basename(path) + ".", suffix=".tmp", delete=False)
+    try:
+        with handle:
+            yield handle
+            handle.flush()
+            os.fsync(handle.fileno())
+        # `NamedTemporaryFile` creates the file 0600 and a rename keeps that
+        # mode, so without this every output would be readable by its owner
+        # alone -- a regression from `open(path, "w")`, which honours the
+        # umask. An existing target keeps its own mode (someone may have
+        # changed it on purpose); a new one gets what `open()` would give it.
+        try:
+            mode = os.stat(path).st_mode & 0o777
+        except OSError:
+            umask = os.umask(0)
+            os.umask(umask)
+            mode = 0o666 & ~umask
+        os.chmod(handle.name, mode)
+        os.replace(handle.name, path)
+    except BaseException:
+        try:
+            os.unlink(handle.name)
+        except OSError:
+            pass
+        raise
+
+
+# A spreadsheet treats a cell beginning with one of these as a FORMULA, not
+# as text, and every title, blurb, creator name and tag in these rows was
+# written by whoever created the campaign. `=HYPERLINK(...)`, `+cmd|...` and
+# `@SUM(...)` are the classic shapes; a leading tab or newline is stripped by
+# some readers, which exposes whatever follows it.
+CSV_FORMULA_LEADS = ("=", "+", "-", "@", "\t", "\r", "\n")
+
+# Prefixed to a cell that would otherwise be read as a formula. Spreadsheets
+# treat the apostrophe as "the rest of this cell is text" and do not show it;
+# a consumer parsing the CSV with `csv` does see it, which is why the count
+# goes in the sidecar as `csv_cells_escaped` rather than staying silent.
+CSV_FORMULA_ESCAPE = "'"
+
+
+def _csv_escape(v: Any) -> Any:
+    """Neutralise a formula-shaped cell. Returns (value, was_escaped).
+
+    Only STRINGS are touched: escaping a number would turn `-5` into the text
+    `'-5` and break every sum a consumer writes over the column.
+
+    CSV only. The JSON output keeps the site's text exactly as served, so the
+    two files deliberately differ; `csv_cells_escaped` in the sidecar declares
+    that divergence instead of leaving it to be discovered.
+    """
+    if isinstance(v, str) and v.startswith(CSV_FORMULA_LEADS):
+        return CSV_FORMULA_ESCAPE + v, True
+    return v, False
+
+
 def write_json(rows: Sequence[Any], path: str) -> None:
-    with open(path, "w", encoding="utf-8") as f:
+    with _atomic(path) as f:
         json.dump([asdict(r) for r in rows], f, ensure_ascii=False, indent=2)
 
 
-def write_csv(rows: Sequence[Any], path: str, row_cls: Type = Campaign) -> None:
+def write_csv(rows: Sequence[Any], path: str, row_cls: Type = Campaign) -> int:
+    """Write the CSV atomically; return how many cells were escaped."""
     # An empty result still gets the header row, from `row_cls` rather than
     # the first row, so a mode that finds nothing still writes the columns
     # that mode would have used.
     fieldnames = [f.name for f in fields(row_cls)]
-    with open(path, "w", encoding="utf-8", newline="") as f:
+    escaped = 0
+    # `newline=""` is the csv module's documented requirement and has to
+    # survive the move to a temp file, or every row gains a stray CR on
+    # Windows.
+    with _atomic(path, newline="") as f:
         writer = csv.DictWriter(f, fieldnames=fieldnames)
         writer.writeheader()
         for r in rows:
-            writer.writerow({k: _csv_value(v) for k, v in asdict(r).items()})
+            row = {}
+            for k, v in asdict(r).items():
+                # Escape AFTER `_csv_value`: a list joined into one cell is
+                # text too, and its first element can be formula-shaped
+                # while the list itself is not a string.
+                value, was_escaped = _csv_escape(_csv_value(v))
+                row[k] = value
+                escaped += was_escaped
+            writer.writerow(row)
+    return escaped
 
 
 # Exit code used when a run completes but produced nothing.
@@ -344,9 +435,9 @@ EXIT_FETCH_FAILED = 5
 # -- the Fingerprint API rejecting a request (bad key, bad --fp-tags, rate
 # limit), or a Scraping Browser CDP connection failing (e.g. profile_locked)
 # -- as opposed to EXIT_BLOCKED (the TARGET SITE refusing a page) or an
-# uncaught crash (1). Per CLAUDE.md's family exit-code contract ("5" =
-# "remote API error"). Deliberately NOT what a captcha-solve failure gets:
-# per that same document's captcha section, a solver error is a WARNING that
+# uncaught crash (1). Exit 5 covers "the content was never obtained",
+# and a remote API error is one case of that. Deliberately NOT what a
+# captcha-solve failure gets: a solver error is a WARNING that
 # lets the run continue (see captcha_solver.py and each engine's
 # handle_captcha_if_present) -- exit 5 is for calls the user explicitly
 # opted into (--fingerprint, --cdp-endpoint) where silently continuing
@@ -370,7 +461,10 @@ class RemoteAPIError(RuntimeError):
 def write_run_meta(out_prefix: str, meta: dict) -> str:
     """Write a run-metadata sidecar next to the output, return its path."""
     path = f"{out_prefix}.meta.json"
-    with open(path, "w", encoding="utf-8") as f:
+    # Atomic for the same reason as the rows, and more urgently: this is the
+    # file a consumer BRANCHES on, so a truncated sidecar beside good rows
+    # reads as a broken run over data that is fine.
+    with _atomic(path) as f:
         json.dump(meta, f, ensure_ascii=False, indent=2)
     print(f"[+] Wrote run metadata -> {path} (status={meta.get('status')})")
     return path
@@ -384,7 +478,8 @@ def run_meta(status: str, stop_reason: str, pages_requested: int,
              total_results: Optional[int] = None,
              pages_available: Optional[int] = None,
              capped_by_site: Optional[bool] = None,
-             reachable_max: Optional[int] = None) -> dict:
+             reachable_max: Optional[int] = None,
+             extra: Optional[dict] = None) -> dict:
     """Build the metadata dict for a finished run.
 
     The last four fields are the site's own arithmetic about the query, and
@@ -401,7 +496,7 @@ def run_meta(status: str, stop_reason: str, pages_requested: int,
     stays self-describing, here so a consumer reading only the sidecar can
     tell which sample it has.
     """
-    return {
+    meta = {
         "source": source,
         "mode": mode,
         "status": status,
@@ -419,15 +514,22 @@ def run_meta(status: str, stop_reason: str, pages_requested: int,
         "final_url": final_url,
         "finished_at": datetime.now(timezone.utc).isoformat(),
     }
+    if extra:
+        meta.update(extra)
+    return meta
 
 
 def save(rows: Sequence[Any], out_prefix: str, fmt: str,
-         allow_empty: bool = False, row_cls: Type = Campaign) -> int:
+         allow_empty: bool = False, row_cls: Type = Campaign,
+         stats: Optional[dict] = None) -> int:
     """Write JSON/CSV and return a process exit code.
 
-    On zero rows, nothing is written at all unless `allow_empty` — see the
-    family invariant in CLAUDE.md §8: a run that finds nothing must not
-    silently replace yesterday's good output with an empty file.
+    On zero rows, nothing is written at all unless `allow_empty`: a run that
+    finds nothing must not silently replace yesterday's good output with an
+    empty file.
+
+    `stats`, when given, receives `csv_cells_escaped` -- reported that way
+    because this function's return value IS the exit code.
     """
     if not rows and not allow_empty:
         print(f"[!] 0 rows — refusing to write {out_prefix}.json/.csv, so an "
@@ -439,8 +541,15 @@ def save(rows: Sequence[Any], out_prefix: str, fmt: str,
         write_json(rows, f"{out_prefix}.json")
         print(f"[+] Saved {len(rows)} row(s) -> {out_prefix}.json")
     if fmt in ("csv", "both"):
-        write_csv(rows, f"{out_prefix}.csv", row_cls=row_cls)
+        escaped = write_csv(rows, f"{out_prefix}.csv", row_cls=row_cls)
         print(f"[+] Saved {len(rows)} row(s) -> {out_prefix}.csv")
+        if stats is not None:
+            stats["csv_cells_escaped"] = escaped
+        if escaped:
+            print(f"[!] {escaped} CSV cell(s) began with a formula character "
+                  f"and were prefixed with {CSV_FORMULA_ESCAPE!r} so a "
+                  f"spreadsheet reads them as text. The JSON output is "
+                  f"unchanged -- see csv_cells_escaped in the sidecar.")
     return 0 if rows else EXIT_NO_PRODUCTS
 
 
@@ -450,8 +559,13 @@ def save(rows: Sequence[Any], out_prefix: str, fmt: str,
 # sloppy: it means the run walked to the end of what indiegogo.com will
 # serve for this query. The run really is complete; `capped_by_site` in the
 # sidecar is what tells a consumer it is also a sample.
+#
+# `no_results` is complete too: the site answered the query and its answer
+# was "nothing matches" (a served page stating `search-count:0`). That is
+# the genuine empty result exit 4 exists for; leaving it out of this tuple
+# made a real empty search exit 5 ("never obtained"), which is false.
 COMPLETE_STOP_REASONS = ("completed", "pagination_exhausted", "no_new_products",
-                         "single_page_mode", "site_result_cap")
+                         "single_page_mode", "site_result_cap", "no_results")
 
 
 def finish_run(rows: Sequence[Any], out_prefix: str, fmt: str,
@@ -464,7 +578,8 @@ def finish_run(rows: Sequence[Any], out_prefix: str, fmt: str,
                total_results: Optional[int] = None,
                pages_available: Optional[int] = None,
                capped_by_site: Optional[bool] = None,
-               reachable_max: Optional[int] = None) -> int:
+               reachable_max: Optional[int] = None,
+               extra: Optional[dict] = None) -> int:
     """Write output + the run-metadata sidecar; return the exit code.
 
     Shared by all three browser engines so the status/exit-code mapping
@@ -485,7 +600,9 @@ def finish_run(rows: Sequence[Any], out_prefix: str, fmt: str,
     # names has a hole for every name nobody added to it.
     complete = stop_reason in COMPLETE_STOP_REASONS and not pages_failed
     row_cls = ROW_CLASS_BY_MODE.get(mode, Campaign)
-    rc = save(rows, out_prefix, fmt, allow_empty=allow_empty, row_cls=row_cls)
+    write_stats: dict = {}
+    rc = save(rows, out_prefix, fmt, allow_empty=allow_empty, row_cls=row_cls,
+              stats=write_stats)
     wrote_output = bool(rows) or allow_empty
 
     if wrote_output:
@@ -497,7 +614,10 @@ def finish_run(rows: Sequence[Any], out_prefix: str, fmt: str,
             pages_failed=pages_failed, mode=mode, source=source, sort=sort,
             total_results=total_results, pages_available=pages_available,
             capped_by_site=capped_by_site, reachable_max=reachable_max,
-            start_url=start_url, final_url=final_url, products=len(rows)))
+            start_url=start_url, final_url=final_url, products=len(rows),
+            # Housekeeping merged UNDER the caller's `extra`: a key collision
+            # must never silently drop something an engine chose to record.
+            extra={**write_stats, **(extra or {})}))
 
     if not rows:
         # Nothing gathered at all, and WHY decides the code. The three

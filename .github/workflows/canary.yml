@@ -21,22 +21,20 @@ name: canary
 # themselves — 0 solves attempted, and the 2Captcha balance was unchanged to
 # five decimal places before and after.
 #
-# Whether a GITHUB runner's address behaves the same way is a separate
-# question, and it is not one this repo can answer in advance. So:
+# A bare GitHub runner behaves the same way: the scheduled runs of
+# 2026-10-06 to 2026-10-14 all fetched 72 rows across 3/3 pages from a runner
+# with no secret configured. So this canary needs NO secret, and every
+# outcome that is not real rows is RED:
 #
 #   * If INDIEGOGO_CDP_ENDPOINT or INDIEGOGO_PROXY is configured, the run
-#     goes through it and being blocked anyway is a REAL failure worth a red
-#     check.
+#     goes through it.
 #   * If neither is configured, the run uses a bare runner and a local
-#     Playwright browser — the configuration the README's central claim is
-#     about, and the one that catches a markup change. But a block from a
-#     bare runner is a fact about that runner's address, not about the site,
-#     so it SKIPS with a ::notice:: rather than failing. A check that goes
-#     red for a reason nobody in this repo can fix is a check everyone
-#     learns to ignore.
+#     Playwright browser — the configuration the README's central claim
+#     ("no key, no proxy") is about. A block there (exit 3) is a FAILURE,
+#     not a skip: that claim is exactly what this job exists to test, and a
+#     canary that goes green without reaching the site tests nothing.
 #
-# Every other exit code is still interpreted and still turns this red, so a
-# markup change cannot hide behind the skip.
+# Exit 3, 4, 5 and 6, and fewer rows than the floor, all turn this red.
 #
 # Secrets reach the scraper through the ENVIRONMENT, never a command line —
 # `ps` reads argv. env_config.py reads exactly these variable names, and an
@@ -78,7 +76,7 @@ jobs:
           elif [ "$HAVE_PROXY" = "true" ]; then
             echo "::notice::Running through INDIEGOGO_PROXY. A block here is a real failure."
           else
-            echo "::notice::Running from a bare runner with a local Playwright browser and no secret. This catches a markup change; if the runner's address meets the challenge, this job SKIPS rather than failing."
+            echo "::notice::Running from a bare runner with a local Playwright browser and no secret -- the README's no-key, no-proxy path. Anything but real rows fails this job."
           fi
 
       - name: Scrape a real, known-good search listing
@@ -115,35 +113,26 @@ jobs:
           CODE: ${{ steps.run.outputs.exit_code }}
         run: |
           code="$CODE"
-          skipped=false
           case "$code" in
             0)   echo "OK — rows parsed from a live run." ;;
             3)   if [ "$HAVE_CDP" = "true" ] || [ "$HAVE_PROXY" = "true" ]; then
-                   echo "::error::Blocked before parsing (exit 3) while running through a configured exit (cdp=$HAVE_CDP proxy=$HAVE_PROXY). That is the documented default path failing, not the runner's address. Check the zone or proxy credentials first — a Scraping Browser zone that refuses CONNECT by host reports ERR_TUNNEL_CONNECTION_FAILED and is an account matter, not a scraper bug — then see detect_bot_challenge()/BOT_CHALLENGE_MARKERS in product_parser.py."
+                   echo "::error::Blocked before parsing (exit 3) while running through a configured exit (cdp=$HAVE_CDP proxy=$HAVE_PROXY). Check the zone or proxy credentials first, then BOT_CHALLENGE_MARKERS in product_parser.py against the HTML dump in the artifacts."
                  else
-                   # No secret configured, so this ran from a bare runner. A
-                   # block here is a fact about that runner's address on the
-                   # day: 8 of 10 requests from one datacentre address were
-                   # challenged on 2026-09-16, and none at all from six other
-                   # network positions later the same day. Nothing in this
-                   # repo can fix it, so it must not paint the check red.
-                   echo "::notice::SKIPPED: this runner's address was challenged before the page was parsed (exit 3), and no INDIEGOGO_CDP_ENDPOINT or INDIEGOGO_PROXY secret is configured to route around it. That is a property of the runner's address, not of the site or of this scraper, so the canary is skipping rather than failing. Set either secret to have this run go through an exit that is not challenged -- and to make a block here a real failure."
-                   skipped=true
-                   code=0
+                   # Not a skip. The README says a plain local browser reads
+                   # this site with no key and no proxy, and bare runners have
+                   # been served every day this was checked; a block here is
+                   # that claim failing, which is what this job is for.
+                   echo "::error::Blocked before parsing (exit 3) from a bare runner with no secret. The README's central claim is that a local browser needs no key and no proxy here, so this is that claim failing. Check BOT_CHALLENGE_MARKERS against the HTML dump in the artifacts (a marker that now also matches GOOD pages reads every page as blocked), then re-run once: a single runner address can be challenged on a given day. If it persists, configure INDIEGOGO_PROXY or INDIEGOGO_CDP_ENDPOINT and update the README."
                  fi ;;
-            4)   echo "::error::Ran fine but parsed 0 rows (exit 4) on a search the site reports 10,000 matches for. Most likely the inlined results payload (App.Components.Search.SearchProjectsResults) moved or was renamed — check extract_inline_search_result() in product_parser.py against the HTML dump in the artifacts, which is what the parser actually saw." ;;
-            5)   echo "::error::Remote API error (exit 5) — a 2captcha product path failed. With a secret configured (cdp=$HAVE_CDP proxy=$HAVE_PROXY) that is the endpoint or the credentials; with neither, nothing should have called a remote API at all and the run log in the artifacts is where to start." ;;
+            4)   echo "::error::Exit 4: the site answered this unfiltered search with its own 'nothing matched' (search-count:0), on a query it normally reports 10,000 matches for. Check the HTML dump in the artifacts and detect_page_state() in product_parser.py." ;;
+            5)   echo "::error::Exit 5: the content was never obtained. Either the navigation itself failed (a load timeout, a dead proxy, or with a secret configured (cdp=$HAVE_CDP proxy=$HAVE_PROXY) the endpoint or its credentials), or the page was served and parsed to nothing (stop_reason=parser_found_nothing): most likely the inlined results payload (App.Components.Search.SearchProjectsResults) moved or was renamed -- check extract_inline_search_result() against the HTML dump in the artifacts. The run log names which." ;;
             6)   echo "::error::Partial run (exit 6) — some pages were gathered and then the run stopped early. canary_run.meta.json names which pages failed. On this site the usual cause is the searchProjectsForCards POST being refused mid-run (the session's Cloudflare clearance expiring under it), which shows up as stop_reason=page_failed." ;;
             2)   echo "::error::Bad usage (exit 2) — the workflow's own arguments are wrong, not the site." ;;
             *)   echo "::error::Unexpected exit code $code (see the step above for the traceback)." ;;
           esac
-          echo "skipped=$skipped" >> "$GITHUB_OUTPUT"
           test "$code" = "0"
 
       - name: Sanity-check the scraped data
-        # Nothing was fetched on the skip path, so there is nothing to check
-        # and canary_run.json does not exist.
-        if: steps.verdict.outputs.skipped != 'true'
         # Exit 0 only means "some rows were written". It says nothing about
         # whether the page actually rendered: a snapshot taken too early still
         # writes rows, just with fields empty. Every floor below is set from a

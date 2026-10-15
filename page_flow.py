@@ -4,7 +4,7 @@ page_flow.py
 Policy and pure algorithms shared by the three engines: what a fetched page
 MEANS, what to do about it, and how this site's pagination works.
 
-It exists for the reason CLAUDE.md gives — indiegogo.com answers a request
+It exists because indiegogo.com answers a request
 in six distinguishable ways and five of them want a different response:
 
     content     the page was served and holds results
@@ -184,7 +184,7 @@ def classify(html: Optional[str], *, status: Optional[int] = None,
 
 
 # What each state means for the run. Kept as data, not as three copies of an
-# if-chain, for the reason CLAUDE.md gives: an engine cannot then quietly
+# if-chain, so that an engine cannot then quietly
 # disagree with its twins about whether a page is worth retrying or paying
 # for.
 STATE_POLICY = {
@@ -332,3 +332,87 @@ def concurrency_warning(concurrency: int, has_proxy_pool: bool,
                 "way to get the address scored than to gather data."
                 % (concurrency, concurrency))
     return None
+
+
+# --------------------------------------------------------------------------
+# Paid solves
+# --------------------------------------------------------------------------
+
+# One paid solve per page load. A second solve on the same page is a second
+# bill for the same answer: a challenge that survives a solved token is not
+# one this run can pass.
+SOLVES_PER_PAGE = 1
+
+
+class SolveBudget:
+    """The allowance every paid solve on one page goes through.
+
+    Checked BEFORE each purchase, at the one place a purchase happens
+    (`handle_captcha_if_present`, which every engine requires a budget for),
+    rather than beside one of its callers. Before this existed there was no
+    limit at all: with the default `--retries 2` one blocked page bought a
+    Turnstile token on every attempt, three solves for one page.
+
+    It deliberately does NOT reset on a retry or on a proxy rotation: a fresh
+    exit is a reason to re-fetch, not a fresh allowance to spend.
+    """
+
+    def __init__(self, limit: int = SOLVES_PER_PAGE):
+        self.limit = limit
+        self.spent = 0
+
+    def try_spend(self) -> bool:
+        """Count one purchase if the allowance permits it. False if not."""
+        if self.spent >= self.limit:
+            logger.info("Not buying another solve for this page: %d of %d "
+                        "already bought.", self.spent, self.limit)
+            return False
+        self.spent += 1
+        return True
+
+
+# --------------------------------------------------------------------------
+# CLI validation shared by every engine
+# --------------------------------------------------------------------------
+
+def non_negative_int(value: str) -> int:
+    """argparse `type=` for a count where 0 is meaningful and -1 is not.
+
+    `--retries` counts EXTRA attempts here (attempts = retries + 1), so 0 is
+    a legal "try once". A negative value used to pass argparse and run ZERO
+    navigations, which every engine then reported as blocked (exit 3) -- a
+    usage error dressed up as a refusal by the site.
+    """
+    import argparse
+    try:
+        n = int(value)
+    except (TypeError, ValueError):
+        raise argparse.ArgumentTypeError(f"expected an integer, got {value!r}")
+    if n < 0:
+        raise argparse.ArgumentTypeError(f"must be 0 or more, got {n}")
+    return n
+
+
+def positive_int(value: str) -> int:
+    """argparse `type=` for a count that must be at least 1 (pages,
+    concurrency)."""
+    import argparse
+    try:
+        n = int(value)
+    except (TypeError, ValueError):
+        raise argparse.ArgumentTypeError(f"expected an integer, got {value!r}")
+    if n < 1:
+        raise argparse.ArgumentTypeError(f"must be 1 or more, got {n}")
+    return n
+
+
+def non_negative_float(value: str) -> float:
+    """argparse `type=` for a delay in seconds."""
+    import argparse
+    try:
+        x = float(value)
+    except (TypeError, ValueError):
+        raise argparse.ArgumentTypeError(f"expected a number, got {value!r}")
+    if x < 0 or x != x:
+        raise argparse.ArgumentTypeError(f"must be 0 or more, got {value}")
+    return x

@@ -9,13 +9,13 @@ body:
         own report because the fix is different from a code bug: something on
         indiegogo.com moved.
 
-        Useful to know before filing: unlike some other scrapers in this family,
-        **this site has no JSON-LD anywhere** — `product_parser.py` anchors on
-        URL patterns (`/profil/spieler/{id}`, `/verein/{id}`,
-        `/jumplist/transfers/...`), the site's own CSS class names
-        (`table.items`, `posrela`, `hauptlink`, `data-header__label`), and
-        `schema.org/Person` microdata on player-profile pages only. Which of
-        those broke narrows the fix a lot.
+        Useful to know before filing: **this site has no JSON-LD anywhere.**
+        `--mode search` reads the results payload inlined in the search page
+        and the site's own `searchProjectsForCards` POST for later pages;
+        `--mode campaign` reads `window.__INITIAL_STATE__`; `--mode rewards`
+        reads the reward boxes by their `data-qa` attributes. The rendered
+        cards (`data-qa` hooks) are the fallback for a missing search
+        payload. Which of those broke narrows the fix a lot.
 
   - type: dropdown
     id: mode
@@ -24,8 +24,7 @@ body:
       options:
         - search
         - campaign
-        - transfers
-        - player
+        - rewards
         - not sure / more than one
     validations:
       required: true
@@ -36,11 +35,11 @@ body:
       label: What stopped matching
       options:
         - Rows (0 rows on a page that visibly has data)
-        - A specific field is null or wrong (price, club, position, fee, ...)
+        - A specific field is null or wrong (price, backers, currency, campaign_end, ...)
         - Price coverage dropped below the floor logged in the run output
         - Pagination stops early or repeats a page
         - The bot-challenge detector finds nothing on a page that has one
-        - schema.org/Person microdata missing on a player profile
+        - The inlined search payload or __INITIAL_STATE__ is missing
         - Something else
     validations:
       required: true
@@ -50,7 +49,7 @@ body:
     attributes:
       label: URL
       description: The exact page URL you ran against.
-      placeholder: "https://www.indiegogo.com/spieler-statistik/wertvollstespieler/marktwertetop"
+      placeholder: "https://www.indiegogo.com/en/projects/search?projectCatalogCategories=BoardAndCardGames"
     validations:
       required: true
 
@@ -61,13 +60,12 @@ body:
       description: |
         Whichever of these you can get. A capture beats a description.
 
-        - The relevant table row's HTML (right-click the row on the real site
-          -> Copy -> Copy outerHTML), or the output of
-          `--dump-html capture.html` against this URL.
+        - The relevant card's or reward box's HTML (right-click it on the
+          real site -> Copy -> Copy outerHTML), or the snapshot written by
+          `--dump-html` against this URL.
         - For a field problem: the value you got, and the value on the page.
-        - For a player-profile problem: whether the page has a
-          `itemtype="https://schema.org/Person"` block at all (view source
-          and search for it).
+        - For a campaign problem: whether the page source still contains
+          `window.__INITIAL_STATE__` at all (view source and search for it).
       render: text
     validations:
       required: true

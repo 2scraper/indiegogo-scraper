@@ -63,9 +63,9 @@ jobs:
       - name: Committed sample output is real
         # Same reasoning as the step above: one implementation, in
         # .github/ci_checks.py, invoked from here. The inline copy that used
-        # to live at this line still imported `Player` and `Transfer` -- the
-        # dataclasses of the repo this one was forked from -- and failed the
-        # build on its first run against a schema that was correct.
+        # to live at this line imported row classes this repo does not have,
+        # and failed the build on its first run against a schema that was
+        # correct.
         run: python .github/ci_checks.py --sample-check
 
       - name: Config reporter runs with no .env present

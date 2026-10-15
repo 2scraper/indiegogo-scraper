@@ -2362,6 +2362,544 @@ def test_scraper_api_waitfor_object_and_http_code():
         f"status handed onward must be the int 403 from http_code, got {status!r}"
 
 
+# ---------------------------------------------------------------------------
+# Output durability, CSV safety, solve budget, exit codes, CLI validation
+# ---------------------------------------------------------------------------
+
+import contextlib
+import types
+
+
+@contextlib.contextmanager
+def _patched(obj, **attrs):
+    """Temporarily replace attributes on a module or object."""
+    saved = {k: getattr(obj, k) for k in attrs}
+    try:
+        for k, v in attrs.items():
+            setattr(obj, k, v)
+        yield
+    finally:
+        for k, v in saved.items():
+            setattr(obj, k, v)
+
+
+def _search_rows():
+    return pp.parse_search_api(SEARCH_API_PAYLOAD, page_index=0,
+                               sort="default").rows
+
+
+@check("an interrupted write leaves the previous good output intact")
+def test_atomic_writes_preserve_old_output():
+    rows = _search_rows()
+    with tempfile.TemporaryDirectory() as d:
+        prefix = os.path.join(d, "out")
+        ow.save(rows, prefix, "both")
+        ow.write_run_meta(prefix, {"status": "complete"})
+        good = {ext: open(prefix + ext, "rb").read()
+                for ext in (".json", ".csv", ".meta.json")}
+
+        def boom(*a, **k):
+            raise OSError("disk full (planted)")
+
+        for ext, call in (
+                (".json", lambda: ow.write_json(rows, prefix + ".json")),
+                (".csv", lambda: ow.write_csv(rows, prefix + ".csv")),
+                (".meta.json", lambda: ow.write_run_meta(prefix, {"x": 1}))):
+            target = ow.csv.DictWriter if ext == ".csv" else ow.json
+            name = "writerow" if ext == ".csv" else "dump"
+            with _patched(target, **{name: boom}):
+                try:
+                    call()
+                except OSError:
+                    pass
+                else:
+                    raise AssertionError(f"planted failure in {ext} did not raise")
+            assert open(prefix + ext, "rb").read() == good[ext], (
+                f"{ext} was truncated by a failed write; the previous good "
+                f"output must survive an interrupted one")
+        leftovers = [f for f in os.listdir(d) if f.endswith(".tmp")]
+        assert not leftovers, f"temp files left behind: {leftovers}"
+
+
+@check("output files honour the umask when new and keep an existing mode")
+def test_atomic_write_modes():
+    if os.name != "posix":
+        return
+    rows = _search_rows()
+    old = os.umask(0o022)
+    try:
+        with tempfile.TemporaryDirectory() as d:
+            for umask, want in ((0o022, 0o644), (0o002, 0o664), (0o077, 0o600)):
+                os.umask(umask)
+                path = os.path.join(d, f"m{umask:o}.json")
+                ow.write_json(rows, path)
+                got = os.stat(path).st_mode & 0o777
+                assert got == want, (
+                    f"new file under umask {umask:03o} is {got:03o}, "
+                    f"expected {want:03o}")
+            os.umask(0o022)
+            path = os.path.join(d, "keep.csv")
+            ow.write_csv(rows, path)
+            os.chmod(path, 0o640)
+            ow.write_csv(rows, path)
+            got = os.stat(path).st_mode & 0o777
+            assert got == 0o640, f"existing mode 640 became {got:03o}"
+    finally:
+        os.umask(old)
+
+
+@check("formula-shaped CSV cells are escaped, counted, and JSON is untouched")
+def test_csv_formula_escaped():
+    row = ow.Campaign(url="https://x", sku="1", title="=HYPERLINK(\"http://e\")",
+                      creator="@me", tags=["+cmd", "ok"], price=-5.0,
+                      short_description="\tlead", currency="USD")
+    with tempfile.TemporaryDirectory() as d:
+        prefix = os.path.join(d, "f")
+        rc = ow.finish_run([row], prefix, "both", False, blocked=False,
+                           stop_reason="completed", pages_requested=1,
+                           pages_completed=1, start_url="u", final_url="u",
+                           mode="search",
+                           extra={"csv_cells_escaped": "caller wins"})
+        assert rc == 0
+        with open(prefix + ".csv", encoding="utf-8", newline="") as f:
+            got = next(csv.DictReader(f))
+        assert got["title"] == "'=HYPERLINK(\"http://e\")", got["title"]
+        assert got["creator"] == "'@me"
+        assert got["tags"] == "'+cmd | ok", got["tags"]
+        assert got["short_description"] == "'\tlead"
+        assert got["price"] == "-5.0", "a number must never be escaped"
+        data = json.load(open(prefix + ".json", encoding="utf-8"))
+        assert data[0]["title"] == "=HYPERLINK(\"http://e\")"
+        assert data[0]["tags"] == ["+cmd", "ok"]
+        meta = json.load(open(prefix + ".meta.json", encoding="utf-8"))
+        assert meta["csv_cells_escaped"] == "caller wins", (
+            "housekeeping must merge UNDER the caller's extra")
+        ow.finish_run([row], prefix, "csv", False, blocked=False,
+                      stop_reason="completed", pages_requested=1,
+                      pages_completed=1, start_url="u", final_url="u",
+                      mode="search")
+        meta = json.load(open(prefix + ".meta.json", encoding="utf-8"))
+        assert meta["csv_cells_escaped"] == 4, meta.get("csv_cells_escaped")
+
+
+@check("a genuinely empty search exits 4; content never obtained exits 5")
+def test_empty_search_exit_code():
+    with tempfile.TemporaryDirectory() as d:
+        rc = ow.finish_run([], os.path.join(d, "e"), "json", False,
+                           blocked=False, stop_reason="no_results",
+                           pages_requested=3, pages_completed=1,
+                           start_url="u", final_url="u", pages_failed=[],
+                           mode="search")
+        assert rc == ow.EXIT_NO_PRODUCTS, f"empty search exited {rc}, not 4"
+        rc = ow.finish_run([], os.path.join(d, "l"), "json", False,
+                           blocked=False, stop_reason="load_failed",
+                           pages_requested=3, pages_completed=0,
+                           start_url="u", final_url="u", pages_failed=[1],
+                           mode="search")
+        assert rc == ow.EXIT_FETCH_FAILED, f"load failure exited {rc}, not 5"
+        rc = ow.finish_run([], os.path.join(d, "p"), "json", False,
+                           blocked=False, stop_reason="parser_found_nothing",
+                           pages_requested=1, pages_completed=0,
+                           start_url="u", final_url="u", mode="search")
+        assert rc == ow.EXIT_FETCH_FAILED, f"parser failure exited {rc}, not 5"
+    # And every engine hands finish_run an EMPTY pages_failed for a served
+    # empty page (read off disk, so this runs with no driver installed).
+    for name in ENGINES:
+        src = open(os.path.join(HERE, f"{name}.py"), encoding="utf-8").read()
+        assert "pages_failed=[] if served_empty else [1]" in src, (
+            f"{name} no longer separates a served empty page from a failed "
+            f"one; an empty search would exit 5")
+
+
+@check("the paid-solve budget allows exactly SOLVES_PER_PAGE purchases")
+def test_solve_budget_unit():
+    assert page_flow.SOLVES_PER_PAGE == 1
+    b = page_flow.SolveBudget()
+    assert b.try_spend() is True
+    assert b.try_spend() is False
+    assert b.try_spend() is False and b.spent == 1
+
+
+@check("every engine routes the paid solve through the page budget")
+def test_solve_budget_wired_in_every_engine():
+    # Read off DISK, never behind an import: a check gated on the driver
+    # would skip for exactly the engines whose driver is absent.
+    for name in ENGINES:
+        tree = ast.parse(open(os.path.join(HERE, f"{name}.py"),
+                              encoding="utf-8").read())
+        defs = [n for n in ast.walk(tree)
+                if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))
+                and n.name == "handle_captcha_if_present"]
+        assert len(defs) == 1, f"{name}: handle_captcha_if_present not found"
+        fn = defs[0]
+        kwonly = [a.arg for a in fn.args.kwonlyargs]
+        assert "budget" in kwonly, f"{name}: budget is not keyword-only"
+        i = kwonly.index("budget")
+        assert fn.args.kw_defaults[i] is None, (
+            f"{name}: budget has a default, so a call site can skip it")
+        solve_lines = [n.lineno for n in ast.walk(fn)
+                       if isinstance(n, ast.Call)
+                       and getattr(n.func, "id", None) == "solve_recaptcha"]
+        spend_lines = [n.lineno for n in ast.walk(fn)
+                       if isinstance(n, ast.Call)
+                       and getattr(n.func, "attr", None) == "try_spend"]
+        assert solve_lines, f"{name}: no solve_recaptcha call found"
+        assert spend_lines and min(spend_lines) < min(solve_lines), (
+            f"{name}: the budget is not checked BEFORE the purchase")
+        calls = [n for n in ast.walk(tree) if isinstance(n, ast.Call)
+                 and getattr(n.func, "id", None) == "handle_captcha_if_present"]
+        assert calls, f"{name}: no call sites found"
+        for c in calls:
+            assert any(k.arg == "budget" for k in c.keywords), (
+                f"{name}:{c.lineno} calls handle_captcha_if_present without "
+                f"a budget")
+
+
+@check("numeric flags reject values that cannot mean anything, in every engine")
+def test_numeric_flag_validation():
+    import argparse as _ap
+    for fn, bad, good in ((page_flow.non_negative_int, ("-1", "x"), ("0", "2")),
+                          (page_flow.positive_int, ("0", "-3"), ("1",)),
+                          (page_flow.non_negative_float, ("-0.5", "nan"), ("0", "1.5"))):
+        for v in bad:
+            try:
+                fn(v)
+            except _ap.ArgumentTypeError:
+                pass
+            else:
+                raise AssertionError(f"{fn.__name__}({v!r}) was accepted")
+        for v in good:
+            fn(v)
+    wanted = {"--retries": "non_negative_int", "--pages": "positive_int",
+              "--concurrency": "positive_int", "--delay": "non_negative_float",
+              "--retry-delay": "non_negative_float"}
+    for name in ENGINES + ("scraper_api_client",):
+        src = open(os.path.join(HERE, f"{name}.py"), encoding="utf-8").read()
+        for flag, validator in wanted.items():
+            if f'"{flag}"' not in src:
+                continue
+            m = re.search(r'add_argument\(\s*"%s",\s*type=([\w.]+)' % re.escape(flag), src)
+            assert m and m.group(1) == f"page_flow.{validator}", (
+                f"{name} {flag} is type={m.group(1) if m else '?'}, "
+                f"not page_flow.{validator}")
+    # And through a real parser, when the engine is importable.
+    for name in ENGINES:
+        mod = _engine(name)
+        if mod is None:
+            continue
+        for argv in (["--retries", "-1"], ["--pages", "0"]):
+            err = io.StringIO()
+            with contextlib.redirect_stderr(err):
+                try:
+                    mod.parse_args(argv)
+                except SystemExit as e:
+                    assert e.code == 2, f"{name} {argv} exited {e.code}"
+                else:
+                    raise AssertionError(f"{name} accepted {argv}")
+            assert argv[0] in err.getvalue() and "error:" in err.getvalue()
+
+
+# --- behavioural engine checks: a fake driver, no browser, no network -----
+
+URL = "https://www.indiegogo.com/en/projects/search"
+_CHALLENGE = types.SimpleNamespace(kind="recaptcha", source="html",
+                                   sitekey="SITEKEY", action=None,
+                                   is_turnstile=False)
+
+
+class _Counter:
+    def __init__(self):
+        self.n = 0
+
+    def __call__(self, *a, **k):
+        self.n += 1
+        return "TOKEN"
+
+
+@check("Playwright: one blocked page buys at most one solve across retries")
+def test_playwright_solve_budget_behaviour():
+    pw = _engine("playwright_scraper")
+    if pw is None:
+        return
+    solver = _Counter()
+
+    class Page:
+        url = URL
+
+        def content(self):
+            return "<html>challenge</html>"
+
+        def query_selector_all(self, sel):
+            return []
+
+        def evaluate(self, *a, **k):
+            return None
+
+        def wait_for_timeout(self, ms):
+            pass
+
+        def reload(self, **k):
+            pass
+
+    session = types.SimpleNamespace(page=Page(), relaunch=lambda: None)
+    args = pw.parse_args(["--url", URL, "--retries", "2", "--retry-delay", "0"])
+    args.twocaptcha_key = "stub-never-sent"
+    with _patched(pw, _goto=lambda *a: types.SimpleNamespace(status=403, headers={}),
+                  _settle=lambda *a: "<html>challenge</html>",
+                  _classify=lambda *a, **k: "captcha",
+                  _looks_like_challenge=lambda *a: False,
+                  detect_recaptcha_v3=lambda *a: _CHALLENGE,
+                  detect_recaptcha_in_page=lambda *a, **k: None,
+                  reconcile_detections=lambda a, b: a or b,
+                  solve_recaptcha=solver):
+        _, _, state = pw._open_first_page(session, args, None)
+    assert state == "captcha", state
+    assert solver.n == 1, f"{solver.n} solves bought for one page"
+
+
+@check("Playwright: pages no worker fetched make a run partial, never complete")
+def test_playwright_concurrency_missing_pages():
+    pw = _engine("playwright_scraper")
+    if pw is None:
+        return
+    html = _served_search_html()
+
+    class Session:
+        def __init__(self, *a, **k):
+            self.page = types.SimpleNamespace(url=URL)
+
+        def open(self):
+            return self
+
+        def close(self):
+            pass
+
+    with tempfile.TemporaryDirectory() as d:
+        args = pw.parse_args(["--url", URL, "--pages", "4", "--concurrency",
+                              "2", "--out", os.path.join(d, "c")])
+        with _patched(pw, sync_playwright=contextlib.nullcontext,
+                      _BrowserSession=Session,
+                      _open_first_page=lambda *a: (Session().page, html, "content"),
+                      _fetch_pages_concurrently=lambda *a, **k: {}):
+            rc = pw.scrape(args)
+        meta = json.load(open(os.path.join(d, "c.meta.json")))
+    assert rc == ow.EXIT_PARTIAL, f"exit {rc}, expected 6"
+    assert meta["status"] == "partial", meta["status"]
+    assert meta["pages_failed"] == [2, 3, 4], meta["pages_failed"]
+    assert meta["pages_unattempted"] == [2, 3, 4]
+
+
+class _FakeSeleniumDriver:
+    def __init__(self, get_error=None):
+        self.get_error = get_error
+        self.page_source = "<html>challenge</html>"
+        self.current_url = URL
+
+    def get(self, url):
+        if self.get_error is not None:
+            raise self.get_error
+
+    def execute_script(self, *a):
+        return None
+
+    def refresh(self):
+        pass
+
+    def quit(self):
+        pass
+
+
+def _selenium_run(sel, argv, driver_factory, classify="captcha", pool=None):
+    solver = _Counter()
+    with tempfile.TemporaryDirectory() as d:
+        args = sel.parse_args(["--url", URL, "--retry-delay", "0",
+                               "--out", os.path.join(d, "s")] + argv)
+        args.twocaptcha_key = "stub-never-sent"
+        with _patched(sel, _open_driver=driver_factory,
+                      _wait_ready=lambda *a: "<html>challenge</html>",
+                      _count=lambda *a: 0,
+                      detect_recaptcha_v3=lambda *a: _CHALLENGE,
+                      detect_turnstile=lambda *a: None,
+                      solve_recaptcha=solver,
+                      proxy_pool_from_args=lambda a: pool), \
+                _patched(page_flow, classify=lambda *a, **k: classify):
+            rc = sel.scrape(args)
+    return rc, solver.n
+
+
+@check("Selenium: one solve per page, dead network exits 5, rotation relaunches")
+def test_selenium_behaviour():
+    sel = _engine("selenium_scraper")
+    if sel is None:
+        return
+    rc, solves = _selenium_run(sel, ["--retries", "2"],
+                               lambda a, p: _FakeSeleniumDriver())
+    assert rc == ow.EXIT_BLOCKED, f"captcha page exited {rc}"
+    assert solves == 1, f"{solves} solves bought for one page"
+    rc, _ = _selenium_run(
+        sel, ["--retries", "1"],
+        lambda a, p: _FakeSeleniumDriver(
+            sel.WebDriverException("net::ERR_NAME_NOT_RESOLVED")))
+    assert rc == ow.EXIT_FETCH_FAILED, (
+        f"a navigation that never succeeded exited {rc}, not 5")
+    launched = []
+
+    def factory(a, p):
+        launched.append(p.current if p else None)
+        return _FakeSeleniumDriver(
+            sel.WebDriverException("net::ERR_PROXY_CONNECTION_FAILED"))
+
+    pool = proxy_pool.ProxyPool(["http://10.0.0.1:1", "http://10.0.0.2:2"],
+                                rotate="per-run")
+    _selenium_run(sel, ["--retries", "1"], factory, pool=pool)
+    assert len(launched) >= 2 and len(set(launched)) == 2, (
+        f"rotation did not relaunch onto the new exit: {launched}")
+
+
+class _FakePyppeteerPage:
+    url = URL
+
+    def __init__(self, goto_error=None):
+        self.goto_error = goto_error
+
+    async def goto(self, *a, **k):
+        if self.goto_error is not None:
+            raise self.goto_error
+        return types.SimpleNamespace(status=403, headers={})
+
+    async def evaluate(self, *a):
+        return None
+
+    async def close(self):
+        pass
+
+
+class _FakePyppeteerBrowser:
+    async def close(self):
+        pass
+
+
+def _pyppeteer_run(pup, argv, page_factory, pool=None):
+    solver = _Counter()
+    launched = []
+
+    async def open_browser(a, p):
+        launched.append(p.current if p else None)
+        return _FakePyppeteerBrowser(), page_factory()
+
+    async def text(*a):
+        return "<html>challenge</html>"
+
+    async def zero(*a):
+        return 0
+
+    with tempfile.TemporaryDirectory() as d:
+        args = pup.parse_args(["--url", URL, "--retry-delay", "0",
+                               "--out", os.path.join(d, "p")] + argv)
+        args.twocaptcha_key = "stub-never-sent"
+        with _patched(pup, _open_browser=open_browser, _wait_ready=text,
+                      _content=text, _count=zero,
+                      detect_recaptcha_v3=lambda *a: _CHALLENGE,
+                      detect_turnstile=lambda *a: None,
+                      solve_recaptcha=solver,
+                      proxy_pool_from_args=lambda a: pool), \
+                _patched(page_flow, classify=lambda *a, **k: "captcha"):
+            rc = pup.scrape(args)
+    return rc, solver.n, launched
+
+
+@check("pyppeteer: one solve per page, dead network exits 5, rotation relaunches")
+def test_pyppeteer_behaviour():
+    pup = _engine("puppeteer_scraper")
+    if pup is None:
+        return
+    rc, solves, _ = _pyppeteer_run(pup, ["--retries", "2"], _FakePyppeteerPage)
+    assert rc == ow.EXIT_BLOCKED, f"captcha page exited {rc}"
+    assert solves == 1, f"{solves} solves bought for one page"
+    rc, _, _ = _pyppeteer_run(
+        pup, ["--retries", "1"],
+        lambda: _FakePyppeteerPage(RuntimeError("net::ERR_NAME_NOT_RESOLVED")))
+    assert rc == ow.EXIT_FETCH_FAILED, (
+        f"a navigation that never succeeded exited {rc}, not 5")
+    pool = proxy_pool.ProxyPool(["http://10.0.0.1:1", "http://10.0.0.2:2"],
+                                rotate="per-run")
+    _, _, launched = _pyppeteer_run(
+        pup, ["--retries", "1"],
+        lambda: _FakePyppeteerPage(RuntimeError("net::ERR_PROXY_CONNECTION_FAILED")),
+        pool=pool)
+    assert len(launched) >= 2 and len(set(launched)) == 2, (
+        f"rotation did not relaunch onto the new exit: {launched}")
+
+
+@check("diff_runs reports a price-provenance difference as source_changed")
+def test_diff_source_changed():
+    import diff_runs
+    old = [{"sku": "1", "title": "t", "price": 12576.05, "price_source": "api"},
+           {"sku": "2", "title": "u", "price": 10.0, "price_source": "api",
+            "backers_count": 1}]
+    new = [{"sku": "1", "title": "t", "price": 12576, "price_source": "dom"},
+           {"sku": "2", "title": "u", "price": 11.0, "price_source": "dom",
+            "backers_count": 2}]
+    r = diff_runs.diff_rows(old, new)
+    assert [c["sku"] for c in r["source_changed"]] == ["1", "2"] or \
+        sorted(c["sku"] for c in r["source_changed"]) == ["1", "2"]
+    assert [c["sku"] for c in r["changed"]] == ["2"], r["changed"]
+    assert "price" not in r["changed"][0]["changes"]
+    same = diff_runs.diff_rows(
+        [{"sku": "1", "price": 1.0, "price_source": "api"}],
+        [{"sku": "1", "price": 2.0, "price_source": "api"}])
+    assert len(same["changed"]) == 1 and not same["source_changed"]
+
+
+@check("the credential scan reads a clone that lives under a venv-named directory")
+def test_secret_scan_uses_relative_paths():
+    src = open(os.path.join(HERE, ".github", "ci_checks.py"),
+               encoding="utf-8").read() if os.path.isdir(
+                   os.path.join(HERE, ".github")) else None
+    if src is None:
+        return              # the Docker image ships no .github at all
+    assert "path.relative_to(REPO).parts" in src, (
+        "ci_checks.py tests absolute path parts, so a clone under a "
+        "directory named venv scans nothing")
+    assert "0 files scanned" in src, "an empty scan must fail, not pass"
+
+
+# Assembled from pieces so this file does not match itself.
+_PRIVATE_CITATIONS = (
+    re.compile(re.escape("CLAUDE" + ".md")),
+    re.compile("claude" + "_2scraper", re.I),
+    re.compile("2scraper" + "_repo_rules"),
+    re.compile("play" + "book", re.I),
+    re.compile("§" + r"\s*\d"),
+)
+
+
+@check("no public file cites the private maintainer notes")
+def test_no_private_citations():
+    for root, dirs, files in os.walk(HERE):
+        dirs[:] = [d for d in dirs
+                   if d not in (".git", "__pycache__", ".venv", "venv",
+                                ".pytest_cache")
+                   and not os.path.isfile(os.path.join(root, d, "pyvenv.cfg"))]
+        for fn in files:
+            if not fn.endswith((".py", ".md", ".yml", ".yaml", ".txt",
+                                ".toml", ".example", ".cfg", ".sh")) \
+                    and fn not in ("Dockerfile", ".gitignore", ".dockerignore"):
+                continue
+            path = os.path.join(root, fn)
+            if fn == "CLAUDE" + ".md":
+                continue      # a local, never-committed file of the maintainer's
+            try:
+                text = open(path, encoding="utf-8").read()
+            except (UnicodeDecodeError, OSError):
+                continue
+            for pat in _PRIVATE_CITATIONS:
+                m = pat.search(text)
+                assert not m, (
+                    f"{os.path.relpath(path, HERE)} cites private notes "
+                    f"({m.group(0)!r}); state the rule in this repo's own words")
+
+
 def main():
     print(f"Running {len(CHECKS)} checks for indiegogo-scraper\n")
     for run in CHECKS:

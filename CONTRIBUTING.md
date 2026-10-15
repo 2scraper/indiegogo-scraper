@@ -40,27 +40,28 @@ whether or not the check caught it.
 
 ## Reporting a site change
 
-Indiegogo changing its markup is the normal way this stops working, and
-it has its own issue template. Worth knowing before filing: this site
-publishes **no JSON-LD anywhere** (checked on every page kind this repo
-covers — a ranking page, a squad page, a transfer list, a player profile).
-So there is no "which of two paths broke" question the way an e-commerce
-scraper has one; every field here comes straight off the DOM, anchored on
-one of three kinds of hook:
+Indiegogo changing its markup or its own API is the normal way this stops
+working, and it has its own issue template. Worth knowing before filing:
+this site publishes **no JSON-LD anywhere**. Every mode reads the site's OWN
+data first and the rendered DOM only as a fallback:
 
-1. **URL patterns** — `/profil/spieler/{id}`, `/verein/{id}`,
-   `/jumplist/transfers/spieler/{id}/transfer_id/{id}`. A contract with
-   search engines, and the most durable anchor this repo has.
-2. **`schema.org/Person` microdata** on a player's own profile header
-   (`itemprop="birthDate"`, `"nationality"`, `"height"`, `"affiliation"`) —
-   real structured data, just not JSON-LD.
-3. **The site's own class names** everywhere else (`data-header__label`,
-   `posrela`, `hauptlink`, `table.items`) or column position within a row.
-   The least durable of the three, and where a markup change is most likely
-   to land.
+1. **`--mode search`** — page 1 reads the results payload inlined in the
+   search page (the `App.Components.Search.SearchProjectsResults` component
+   props); pages 2+ repeat the site's own
+   `POST /api/projectSearch/searchProjectsForCards` call with the next
+   `pageIndex`. If the inlined payload disappears, the run falls back to the
+   rendered cards (`data-qa` hooks) for page 1 and says so by name.
+2. **`--mode campaign`** — `window.__INITIAL_STATE__`, inlined in the
+   campaign page.
+3. **`--mode rewards`** — the reward boxes on the campaign page, anchored on
+   the site's `data-qa` attributes (`price-type:Old`,
+   `price-type:ThirtyDaysLowest`, ...). The least durable of the three, and
+   where a markup change is most likely to land.
 
-If you are reporting a change, saying which of these three broke (and for
-(3), which selector) narrows the fix a lot.
+If you are reporting a change, saying which of these broke (and for the DOM
+paths, which `data-qa` value) narrows the fix a lot. Note that some search
+results are campaigns hosted on gamefound.com: their campaign URLs answer
+404 on indiegogo.com, and that is the site's behaviour, not a bug.
 
 `--dump-html PATH` writes the exact bytes the parser was given, on success as
 well as failure, and a run that finds nothing writes a dump and a screenshot
@@ -76,46 +77,39 @@ Several properties in this repo exist because they were once absent, cost
 real time to find, and are now pinned by a test so a PR that breaks one fails
 rather than silently regressing:
 
-- **`data-header__label` appears on TWO different tags in a player's profile
-  header** — `<li>` for birth date/position/agent, `<span>` for
-  Joined/Contract expires — and selecting only `li` silently drops the
-  latter. `_label_map()`'s docstring in `product_parser.py` has the story;
-  the fix is a comma-separated selector, not a second function.
-- **A club or player title attribute can be doubled on this site's own
-  markup** — `title="Without ClubWithout Club"` is real, observed markup for
-  the "Without Club" free-agent placeholder, not a scraping bug. Read the
-  TEXT-bearing anchor (`td.hauptlink a`), not the first matching link in the
-  cell (which can be an image-only wrapper with an empty text node), and let
-  `_detitle()` catch the doubling as a second line of defence.
-- **`search` mode's own pagination cannot be trusted as a URL to
-  reconstruct.** Its `<link rel="next">` carries a doubled, 404ing path
-  segment, and even the hand-corrected URL replays page 1 when fetched
-  statelessly — see page_flow.py's "gallery pagination trap". Do not port
-  the `?page=N` construction that works for `transfers` onto this mode; it
-  chains the site's own link one page at a time inside a single browser
-  session instead, and reports the honest (possibly partial) result.
+- **`?page=N` on a search URL is ignored by the site.** It answers HTTP 200
+  with the identical first 24 cards, so a `page_url()`-style construction
+  would refetch page 1 forever and report a complete run. Pages are
+  addressed by the POST body's 0-based `pageIndex` instead, planned from
+  the site's own page count (`page_flow.plan_page_indices`), and
+  `product_parser.page_url()` raises rather than returning anything.
+- **`price` on a Campaign row is funds RAISED**, and `price_source` records
+  whether it came from the API (an exact float) or a rendered card (rounded
+  for display). `diff_runs.py` reports a price difference that comes with a
+  `price_source` difference as `source_changed`, not `changed`.
+- **Zero is not always a value.** `funded_in_seconds` is `0` in the API for
+  campaigns where it does not apply, and is written as null.
 - **A run that finds nothing writes nothing.** It must not replace a good
   output file with `[]`. `--allow-empty` is the opt-out.
 - **Exit codes are a contract**, not decoration: `0` ok, `1` crash, `2` bad
-  usage, `3` blocked, `4` zero rows, `6` partial. A pipeline branches on
-  these.
-- **An EMPTY page is never retried and never counted as blocked.** An
-  out-of-range page number or a campaign URL for a club with no current
-  roster data are correct answers to the question that was asked, not
-  failures. `page_flow.STATE_POLICY` holds that for all three engines so
+  usage, `3` blocked, `4` the site answered and nothing matched, `5` the
+  content was never obtained (or a served page parsed to nothing), `6`
+  partial. A pipeline branches on these.
+- **An EMPTY page is never retried and never counted as blocked.** A
+  search the site itself answers with `search-count:0` is a correct answer
+  to the question that was asked, not a failure, and exits 4. `page_flow.STATE_POLICY` holds that for all three engines so
   they cannot disagree about it.
 - **A challenge marker is not necessarily a real challenge on THIS site.**
-  `product_parser.BOT_CHALLENGE_MARKERS` is broad and, unlike the DOM
-  selectors above, was NOT measured against a real challenge here (see
-  captcha_solver.py's closing note) — it is cheap insurance carried over
-  from this family's other members. Do not narrow it on the assumption that
-  Indiegogo behaves like them; measure first if you touch it.
+  `product_parser.BOT_CHALLENGE_MARKERS` decides whether a page is a
+  Cloudflare challenge. Count any marker you add on a page you know is GOOD
+  first: a marker that also appears on served pages turns every good page
+  into a "blocked" one.
 - **A `sku` already written by an earlier page of the same run is dropped,
   not duplicated.** See `dedupe_by_key` in `output_writer.py`. Note that
-  `sku` means something different per mode — a player id for
-  search/campaign/player, a transfer's own id for `transfers` (a
-  player can transfer more than once in one run's data) — so a change here
-  should be checked against all four modes, not just one.
+  `sku` means something different per mode — the campaign's `projectID`
+  for search/campaign, the reward's own `productID` for `rewards` (one
+  campaign has many rewards) — so a change here should be checked against
+  all three modes, not just one.
 
 There is also a naming check: certain phrases are banned repo-wide and the
 suite fails naming them. If it trips, read the message — the phrase is wrong
@@ -135,32 +129,28 @@ for a reason, not merely unfashionable.
   success without checking that the thing it wanted actually happened, is a
   common bug class. A selector that matches the *wrong* element is worse
   than one that matches nothing, because the second one tells you.
-- **Never present a guess as a fact.** A market value or fee that could not
-  be read is `None`, not `0` or a copied neighbour's value — see
-  `parse_market_value`'s handling of `"-"` and the null-price tests in
-  `smoke_test.py`.
+- **Never present a guess as a fact.** A figure that could not be read is
+  `None`, not `0` or a copied neighbour's value; a currency the site states
+  only as an ambiguous symbol (`kr`) is `None`, never a defaulted `"USD"`.
 
 ### If your change needs a live run
 
-Most do not — the suite covers the four parsers, the writers, the captcha
+Most do not — the suite covers the parsers, the writers, the captcha
 classifier and the CLI contract against inline fixtures cut from real
 captures. If yours genuinely needs indiegogo.com, say in the PR what you
-ran (`--mode`, and `--club-id`/`--player-id`/`--season` if relevant), whether
-you used a proxy, and what you got — including the exit code and
-`.meta.json`'s `stop_reason`. Whether a datacentre address is refused here is
-genuinely unmeasured for v0.1 (see README's "known limitations"), so "it
-returned nothing" from a bare CI runner or a VPS is itself useful data, not
-noise — say so explicitly rather than treating it as a normal negative
-result.
+ran (`--mode`, `--url`, `--pages`, the engine), whether you used a proxy, and
+what you got — including the exit code and `.meta.json`'s `stop_reason`.
+Every page here is behind a Cloudflare managed challenge that a real browser
+usually clears by itself, so say whether a challenge was met.
 
 Do not add anything that requires logging in, or that submits a form on the
 site. This project only reads pages an anonymous visitor is served.
 
 ## Scope
 
-This repo scrapes **public pages** on Indiegogo: player market-value
-rankings, club squads, the latest-transfers listing and individual player
-profiles, exactly as an anonymous visitor is served them. Out of scope:
+This repo scrapes **public pages** on Indiegogo: the project search
+listing, individual campaign pages and their reward tiers, exactly as an
+anonymous visitor is served them. Out of scope:
 anything behind a login, anything that submits a form, and anything that
 defeats a protection rather than passing it the way an ordinary browser
 does.

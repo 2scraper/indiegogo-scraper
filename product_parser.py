@@ -34,8 +34,7 @@ in three measured ways rather than merely less convenient:
     `campaignEnd`.
 
 The fallback anchors on the site's own `data-qa` attributes rather than on
-CSS classes, for the reason CLAUDE.md gives for preferring `data-asin` on
-Amazon: they are the site's test hooks, they are semantic, and they survive
+CSS classes: they are the site's test hooks, they are semantic, and they survive
 a restyle. The class names here (`gfu-project-card__title`) are semantic too
 rather than build hashes, but `data-qa` is still the better anchor.
 
@@ -71,7 +70,7 @@ from output_writer import Campaign, Reward, SOURCE_DEFAULT
 # Indiegogo is ONE host with a locale path prefix, not a set of country
 # hostnames like MediaMarkt's ten. Taken from the site's own
 # <link rel="alternate" hreflang=...> set on /en/projects/search rather than
-# guessed, per CLAUDE.md's per-site checklist.
+# guessed.
 LOCALES = ("en", "it", "fr", "de", "pl", "es", "cs", "pt", "zh")
 
 CANONICAL_HOST = "www.indiegogo.com"
@@ -425,8 +424,8 @@ CURRENCY_BY_SYMBOL = {
     "$": "USD",
 }
 
-# Longest-first, so "HK$" is never swallowed by the bare "$" -- the failure
-# CLAUDE.md's currency section names, which would report a Hong Kong campaign
+# Longest-first, so "HK$" is never swallowed by the bare "$" -- a failure
+# which would report a Hong Kong campaign
 # raising HK$6.5m as a USD figure.
 _CURRENCY_SYMBOLS_LONGEST_FIRST = tuple(
     sorted(CURRENCY_BY_SYMBOL, key=len, reverse=True))
@@ -870,8 +869,8 @@ def search_result_count(html: str) -> Optional[int]:
     `data-qa="search-count:0"` on a served page is the site saying, in its
     own markup, that this query matched nothing -- an UNAMBIGUOUS positive
     signal that no interstitial would carry. detect_page_state consults it
-    before any threshold-based heuristic, per CLAUDE.md's
-    classification-order rule.
+    before any threshold-based heuristic: a marker only the real page can
+    carry proves more than a threshold.
     """
     m = re.search(r'data-qa="search-count:(\d+)"', html or "")
     return int(m.group(1)) if m else None
@@ -1383,10 +1382,9 @@ def detect_page_state(html: str, *, status: Optional[int] = None,
                       mode: str = "search") -> str:
     """Classify one fetched page: content / empty / not_found / captcha / blocked / unpainted.
 
-    Ordered by how much each signal PROVES, not by how cheap it is -- the
-    ordering trap CLAUDE.md records from tokopedia-scraper, where a
-    threshold-based heuristic ran ahead of an unambiguous positive marker
-    and reported exit 3 for a correct answer.
+    Ordered by how much each signal PROVES, not by how cheap it is -- a
+    sibling scraper once let a threshold-based heuristic run ahead of an
+    unambiguous positive marker and reported exit 3 for a correct answer.
 
     So, in order:
 
