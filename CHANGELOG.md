@@ -11,6 +11,8 @@ the release notes rather than left to be discovered from a bill or a diff.
 
 ## [Unreleased]
 
+## [0.2.0] — 2026-10-15
+
 > **Behaviour changes for scripts.**
 > - A search the site answers with its own "nothing matched"
 >   (`search-count:0`) now exits **4** (`no_results`, an empty result) in all
@@ -36,6 +38,7 @@ the release notes rather than left to be discovered from a bill or a diff.
 >   under your umask; an existing file keeps its mode.
 
 ### Fixed
+
 - An interrupted write (a crash, a kill, a full disk) no longer destroys the
   previous good output: `out.json`, `out.csv` and `out.meta.json` are each
   written atomically. Measured before the fix: an 852-byte `out.json` came
@@ -67,28 +70,67 @@ the release notes rather than left to be discovered from a bill or a diff.
   a fresh endpoint.
 - `--proxy-block-retries` is accepted for compatibility with the other
   scrapers in this family; its help now says it has no effect here.
-
-### Added
-- CSV output prefixes any text cell that begins with `=`, `+`, `-`, `@`, a
-  tab or a line break with an apostrophe, so a spreadsheet does not run it as
-  a formula. Numbers are untouched, JSON keeps the site's text, and the
-  sidecar's `csv_cells_escaped` counts the cells that differ.
-
-### Changed
-- The daily canary no longer skips green when the runner is blocked (exit
-  3): the README's claim is that a local browser needs no key and no proxy
-  here, and bare runners have been served on every scheduled run checked, so
-  a block is now a failure. Its exit 4 and 5 messages match the codes above.
-
-### Fixed
 - The daily canary was red from 2026-10-07 to 2026-10-12 although the run
   itself was healthy (72 rows, `complete`, 3 of 3 pages). Its sanity check
   rejected `pct_funded <= 0`, and a real campaign that raised 10,000 against
   a goal of 900,000,000 rounds to 0.0. The check now fails on a negative
   percentage, or one computed from a goal that is not positive; zero is a
   figure. The parser was right and is unchanged, with a check pinning the case.
+- **Scraper API: `waitFor` is now sent as a JSON object.** Measured
+  2026-09-23 against `scraper.2captcha.com/tasks/sync`: the JSON-encoded
+  string this client sent (the form older docs described) is refused with
+  HTTP 422 "params.waitFor must be an object" -- and the task is still
+  billed ($0.0005) -- so every run with `--wait-text` or its sibling wait flags
+  failed with exit 5. The object form answers HTTP 200.
+- **Scraper API: the target page's status is read from `http_code`.** The
+  response's `status` field is the API's own verdict string (`"success"`),
+  not the target site's HTTP code, so a target 403/503 was never seen by
+  this client. `http_code` (an int) is read now, with `status` kept as a
+  fallback only when it is an int.
+- **A rendered enterprise widget went undetected.** The iframe rung matched
+  `recaptcha/api2/anchor`; this site serves `recaptcha/enterprise/anchor`,
+  where the sitekey can be only in the frame's `k=` parameter.
+- **A sitekey inside the site's own `<captcha-*>` mount went undetected.**
+- **`category` is localised and differed BETWEEN MODES.** The same German
+  campaign read `Produktivität` from `--mode search` (the API's localised
+  name) and `Productivity` from `--mode campaign` (a numeric code resolved
+  through an English table).
+- **`pyproject` extras had drifted from `requirements-*.txt`**
+  (`playwright>=1.44` against `>=1.40.0`, `selenium>=4.20` against
+  `>=4.15.0`). CI installs the requirements files, so the drift was invisible.
+- **The offline suite's credential check scanned gitignored files** and
+  failed on a `--dump-html` capture containing a site nonce — a file that
+  cannot be committed. `.github/ci_checks.py` had already learned this;
+  the suite now matches it.
+- **`.gitignore` did not cover this repo's own default output prefixes.**
+- **Leftovers from the repo this one was bootstrapped from.** `.gitignore`
+  listed transfermarkt-scraper's `transfermarkt_products.*` output prefixes
+  (this repo's own `indiegogo_projects.*` was already listed) and described
+  `sample_output.*` as a `--mode market-values` run; it is `--mode search`.
+  `tools/waf_probe.sh` and `tools/verify_browser_api.sh` were transfermarkt's
+  AWS WAF probes — transfermarkt URLs, `TRANSFERMARKT_*` variables that this
+  repo's loader does not read, and a `--mode market-values` this repo does
+  not have. Nothing referenced either, and this site's gate is a Cloudflare
+  managed challenge rather than AWS WAF, so they are removed rather than
+  ported.
+
+### Added
+
+- CSV output prefixes any text cell that begins with `=`, `+`, `-`, `@`, a
+  tab or a line break with an apostrophe, so a spreadsheet does not run it as
+  a formula. Numbers are untouched, JSON keeps the site's text, and the
+  sidecar's `csv_cells_escaped` counts the cells that differ.
+- **`category_code`** on `Campaign` — the site's numeric, locale-independent
+  catalogue id. Join on it; `category` is display text.
+- Checks pinning all of the above, each verified to fail when its fix is
+  reverted.
 
 ### Changed
+
+- The daily canary no longer skips green when the runner is blocked (exit
+  3): the README's claim is that a local browser needs no key and no proxy
+  here, and bare runners have been served on every scheduled run checked, so
+  a block is now a failure. Its exit 4 and 5 messages match the codes above.
 - `scraper_api_client.py` warns on stderr when the key is passed with `--key`
   (visible to `ps`, kept in shell history). `TWOCAPTCHA_KEY` in `.env` is
   unchanged and remains the documented way.
@@ -117,54 +159,6 @@ are two, at different layers:
 "No challenge rendered" is not "no captcha configured", so the useful
 question was whether this repo would RECOGNISE it. Constructing the shapes
 this site's own captcha would take found two the static detector missed.
-
-### Fixed
-
-- **Scraper API: `waitFor` is now sent as a JSON object.** Measured
-  2026-09-23 against `scraper.2captcha.com/tasks/sync`: the JSON-encoded
-  string this client sent (the form older docs described) is refused with
-  HTTP 422 "params.waitFor must be an object" -- and the task is still
-  billed ($0.0005) -- so every run with `--wait-text` or its sibling wait flags
-  failed with exit 5. The object form answers HTTP 200.
-- **Scraper API: the target page's status is read from `http_code`.** The
-  response's `status` field is the API's own verdict string (`"success"`),
-  not the target site's HTTP code, so a target 403/503 was never seen by
-  this client. `http_code` (an int) is read now, with `status` kept as a
-  fallback only when it is an int.
-- **A rendered enterprise widget went undetected.** The iframe rung matched
-  `recaptcha/api2/anchor`; this site serves `recaptcha/enterprise/anchor`,
-  where the sitekey can be only in the frame's `k=` parameter.
-- **A sitekey inside the site's own `<captcha-*>` mount went undetected.**
-- **`category` is localised and differed BETWEEN MODES.** The same German
-  campaign read `Produktivität` from `--mode search` (the API's localised
-  name) and `Productivity` from `--mode campaign` (a numeric code resolved
-  through an English table).
-- **`pyproject` extras had drifted from `requirements-*.txt`**
-  (`playwright>=1.44` against `>=1.40.0`, `selenium>=4.20` against
-  `>=4.15.0`). CI installs the requirements files, so the drift was invisible.
-- **The offline suite's credential check scanned gitignored files** and
-  failed on a `--dump-html` capture containing a site nonce — a file that
-  cannot be committed. `.github/ci_checks.py` had already learned this;
-  the suite now matches it.
-- **`.gitignore` did not cover this repo's own default output prefixes.**
-
-- **Leftovers from the repo this one was bootstrapped from.** `.gitignore`
-  listed transfermarkt-scraper's `transfermarkt_products.*` output prefixes
-  (this repo's own `indiegogo_projects.*` was already listed) and described
-  `sample_output.*` as a `--mode market-values` run; it is `--mode search`.
-  `tools/waf_probe.sh` and `tools/verify_browser_api.sh` were transfermarkt's
-  AWS WAF probes — transfermarkt URLs, `TRANSFERMARKT_*` variables that this
-  repo's loader does not read, and a `--mode market-values` this repo does
-  not have. Nothing referenced either, and this site's gate is a Cloudflare
-  managed challenge rather than AWS WAF, so they are removed rather than
-  ported.
-
-### Added
-
-- **`category_code`** on `Campaign` — the site's numeric, locale-independent
-  catalogue id. Join on it; `category` is display text.
-- Checks pinning all of the above, each verified to fail when its fix is
-  reverted.
 
 ### The proxy path, now exercised live
 
@@ -211,7 +205,6 @@ Measured 2026-09-17 through a 2Captcha residential gateway:
 - `--concurrency 3` over 6 pages returns 144 rows with unique
   `(page, position)` and no duplicate skus.
 - `/de/` and `/zh/` each return 48/48 fully populated rows.
-
 - `SECURITY.md` said this project has no releases or version tags; it has
   both. "Supported versions" now names the latest release and `main`.
 - `captcha_solver.py`'s docstring pointed at a "No DataDome solver" section
@@ -283,4 +276,5 @@ From a datacentre address (Hetzner, Helsinki, AS24940):
 - `fundedInSeconds` is never null; it reports `0` for "not applicable", which
   is normalised away.
 
+[0.2.0]: https://github.com/2scraper/indiegogo-scraper/releases/tag/v0.2.0
 [0.1.0]: https://github.com/2scraper/indiegogo-scraper/releases/tag/v0.1.0

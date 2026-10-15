@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "indiegogo-scraper"
-version = "0.1.0"
+version = "0.2.0"
 description = "Scrape indiegogo.com project listings, campaigns and reward tiers with Playwright, Selenium, Puppeteer or the 2Captcha Scraping Browser API"
 readme = "README.md"
 license = { file = "LICENSE" }
