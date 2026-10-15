@@ -77,17 +77,20 @@ jobs:
             you can find is a number or a claim that no longer matches the
             code, or a comment that explains a reason the code no longer has.
 
-            A few things specific to this repo worth checking: every price is
-            in EUR and every row is a DOM reading (there is no JSON-LD on
-            this site to cross-check against — see output_writer.py and
-            diff_runs.py); there are two row schemas, Player and Transfer
-            (output_writer.py), and a change to one should not silently affect
-            the other; `page` and `row_index` must stay unique across a
-            paginated run (see product_parser.py and the tokopedia lesson in
-            CLAUDE.md); and `--mode search`'s pagination has a known
-            "gallery pagination trap" that page_flow.py's
-            pagination_is_addressable() specifically guards against — a
-            change there deserves extra scrutiny.
+            A few things specific to this repo worth checking: search rows
+            are read from the site's own searchProjectsForCards JSON (page 1
+            from the copy inlined in the page, pages 2+ from a same-origin
+            POST), and `price` on a Campaign row is funds RAISED, with
+            `price_source` recording where it was read (see output_writer.py
+            and diff_runs.py); there are two row schemas, Campaign and Reward
+            (output_writer.py), and a change to one should not silently
+            affect the other; `page` and `position` must stay unique across a
+            paginated run; search results mix in gamefound.com-hosted
+            campaigns, labelled by the `platform` column; and `?page=N` on
+            the search URL is IGNORED by the site (it re-serves page 1), so
+            pagination goes through the POST body's `pageIndex` — see
+            page_flow.py's module docstring and plan_page_indices(); a change
+            there deserves extra scrutiny.
 
             Also worth flagging: a check that cannot fail, an error path that
             swallows a failure silently, a credential that could reach a

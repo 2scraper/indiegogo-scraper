@@ -11,6 +11,75 @@ the release notes rather than left to be discovered from a bill or a diff.
 
 ## [Unreleased]
 
+> **Behaviour changes for scripts.**
+> - A search the site answers with its own "nothing matched"
+>   (`search-count:0`) now exits **4** (`no_results`, an empty result) in all
+>   three browser engines. It exited 5 ("never obtained"), which said the
+>   opposite of what happened.
+> - A `--concurrency` run in which some planned pages were never fetched by
+>   any worker now ends **partial (exit 6)**, listing them in `pages_failed`
+>   and the sidecar's `pages_unattempted`. It used to report `complete` and
+>   exit 0 with those pages missing.
+> - The Selenium and pyppeteer engines now exit **5** when every navigation
+>   failed (a dead network, a timeout), like the Playwright engine. They
+>   reported exit 3 (blocked), sending the reader after a proxy problem.
+> - A paid captcha solve is now bought at most **once per page**. With the
+>   default `--retries 2`, one gated page used to buy a token on every
+>   attempt (three solves); the run now stops at exit 3 after one.
+> - `--retries`, `--delay` and `--retry-delay` below 0, and `--pages` or
+>   `--concurrency` below 1, are now usage errors (exit 2) naming the flag,
+>   in all engines and `scraper_api_client.py`. `--retries -1` used to run
+>   no navigation at all and report exit 3. `--retries 0` (try once) is
+>   unchanged.
+> - Output files are written to a temporary file in the same directory and
+>   renamed into place. A new file gets the mode `open()` would have given it
+>   under your umask; an existing file keeps its mode.
+
+### Fixed
+- An interrupted write (a crash, a kill, a full disk) no longer destroys the
+  previous good output: `out.json`, `out.csv` and `out.meta.json` are each
+  written atomically. Measured before the fix: an 852-byte `out.json` came
+  back as 12 bytes of invalid JSON.
+- In the Selenium and pyppeteer engines, rotating to the next proxy exit now
+  relaunches the browser. `--proxy-server` is fixed at launch, so the old
+  code advanced the pool and kept using the first exit. Both engines also
+  rotate on a blocked page 1 when a pool is given, as Playwright does.
+- `diff_runs.py` now has the `source_changed` bucket its documentation
+  described: a price difference that comes with a `price_source` difference
+  (the API's exact figure against a card's rounded one) is reported there and
+  does not trip `--fail-on-change`.
+- The credential scan in `.github/ci_checks.py` tested every ancestor of the
+  checkout against its skip list, so a clone under a directory named `venv`
+  scanned 0 files and reported clean. It now tests paths relative to the
+  repository, fails when it scanned nothing, and also reads `.json`, `.csv`,
+  `.toml`, `.cfg` and `.sh` files.
+- CONTRIBUTING.md, the bug-report and site-change issue templates and the
+  review workflow's prompt now describe Indiegogo (modes `search`,
+  `campaign`, `rewards`, the inlined search payload and the
+  `searchProjectsForCards` POST) instead of another site's pages, flags and
+  modes.
+- The exit-code tables in README.md and TROUBLESHOOTING.md now say what exit
+  4 and 5 mean in the code: 4 is "the site answered and nothing matched", 5
+  is "the content was never obtained", including a served page that parsed
+  to nothing (`parser_found_nothing`).
+- The help text and docs no longer say Scraping Browser credentials last
+  "about a day"; how long one lasts varies, and a 401 is the signal to fetch
+  a fresh endpoint.
+- `--proxy-block-retries` is accepted for compatibility with the other
+  scrapers in this family; its help now says it has no effect here.
+
+### Added
+- CSV output prefixes any text cell that begins with `=`, `+`, `-`, `@`, a
+  tab or a line break with an apostrophe, so a spreadsheet does not run it as
+  a formula. Numbers are untouched, JSON keeps the site's text, and the
+  sidecar's `csv_cells_escaped` counts the cells that differ.
+
+### Changed
+- The daily canary no longer skips green when the runner is blocked (exit
+  3): the README's claim is that a local browser needs no key and no proxy
+  here, and bare runners have been served on every scheduled run checked, so
+  a block is now a failure. Its exit 4 and 5 messages match the codes above.
+
 ### Fixed
 - The daily canary was red from 2026-10-07 to 2026-10-12 although the run
   itself was healthy (72 rows, `complete`, 3 of 3 pages). Its sanity check

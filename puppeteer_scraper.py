@@ -203,7 +203,8 @@ async def _open_browser(args, pool):
                 f"{_mask_credentials(args.cdp_endpoint)}: "
                 f"{_mask_credentials(str(e))}\n"
                 f"A Scraping Browser profile allows ONE live connection at a "
-                f"time. Profile credentials also expire after about a day."
+                f"time. Profile credentials also expire: a 401 means fetch a "
+                f"fresh endpoint."
             ) from None
         page = await browser.newPage()
         await _install_turnstile_hook(page)
@@ -274,8 +275,12 @@ async def fetch_search_page(page, body: Dict[str, Any]) -> Dict[str, Any]:
         ) from None
 
 
-async def handle_captcha_if_present(page, args) -> bool:
-    """Detect and solve a challenge. True if something was solved."""
+async def handle_captcha_if_present(page, args, *, budget) -> bool:
+    """Detect and solve a challenge. True if something was solved.
+
+    `budget` is required so no call site can reach the paid solver without
+    the page's allowance; it is checked immediately before the purchase.
+    """
     html = await _content(page)
     if not html:
         return False
@@ -323,6 +328,8 @@ async def handle_captcha_if_present(page, args) -> bool:
     if not args.twocaptcha_key:
         logger.warning("No 2captcha API key, so this challenge cannot be "
                        "solved — continuing with whatever the page holds.")
+        return False
+    if not budget.try_spend():
         return False
     try:
         token = solve_recaptcha(challenge, args.twocaptcha_key,
@@ -387,23 +394,47 @@ async def _scrape_async(args) -> int:
     final_url = args.url
 
     browser, page = await _open_browser(args, pool)
+
+    async def _rotate(reason: str):
+        # A rotation is a FRESH BROWSER: --proxy-server is fixed at launch,
+        # so advancing the pool without relaunching left every later attempt
+        # on the old exit -- the rotation did nothing. (Never reached over
+        # --cdp-endpoint: a pool and an endpoint are refused together.)
+        nonlocal browser, page
+        pool.advance(reason)
+        try:
+            await browser.close()
+        except Exception as ce:  # noqa: BLE001
+            logger.debug("Ignoring error closing the old browser: %s", ce)
+        browser, page = await _open_browser(args, pool)
+
     try:
         html = ""
-        state = "blocked"
-        for attempt in range(1, args.retries + 2):
+        # Nothing has been obtained until a navigation succeeds. Starting at
+        # "blocked" reported a dead network as a refusal by the site (exit 3)
+        # where the Playwright engine, correctly, reports exit 5.
+        state = "load_failed"
+        # One paid-solve allowance for page 1, across every attempt and
+        # every rotation.
+        budget = page_flow.SolveBudget()
+        attempts = args.retries + 1
+        for attempt in range(1, attempts + 1):
             try:
                 resp = await page.goto(args.url, waitUntil="domcontentloaded",
                                        timeout=NAV_TIMEOUT_MS)
             except Exception as e:  # noqa: BLE001
                 marker = _proxy_failure(e)
-                logger.warning("Navigation failed (attempt %d): %s",
-                               attempt, _mask_credentials(str(e)))
+                state = "load_failed"
+                logger.warning("Navigation failed (attempt %d/%d): %s",
+                               attempt, attempts, _mask_credentials(str(e)))
                 if marker and pool:
                     try:
-                        pool.advance(f"proxy failure: {marker}")
+                        await _rotate(f"proxy failure: {marker}")
                     except ProxyError as pe:
                         raise RemoteAPIError(str(pe)) from None
-                time.sleep(args.retry_delay)
+                    continue
+                if attempt < attempts:
+                    time.sleep(args.retry_delay)
                 continue
             status = getattr(resp, "status", None)
             headers = getattr(resp, "headers", None)
@@ -415,14 +446,20 @@ async def _scrape_async(args) -> int:
             if state == "content":
                 break
             if page_flow.should_solve(state):
-                if await handle_captcha_if_present(page, args):
+                if await handle_captcha_if_present(page, args, budget=budget):
                     html = await _wait_ready(page, args.mode)
                     state = page_flow.classify(html, mode=args.mode)
                     if state == "content":
                         break
             if not page_flow.should_retry(state):
                 break
-            time.sleep(args.retry_delay)
+            if attempt < attempts:
+                if pool:
+                    try:
+                        await _rotate(f"page 1 came back as {state}")
+                    except ProxyError as pe:
+                        logger.warning("Could not rotate: %s", pe)
+                time.sleep(args.retry_delay)
 
         final_url = page.url
         if state != "content":
@@ -430,12 +467,19 @@ async def _scrape_async(args) -> int:
             blocked = page_flow.counts_as_blocked(state)
             stop_reason = {"empty": "no_results", "not_found": "not_found",
                            "captcha": "blocked_by_captcha", "blocked": "blocked",
+                           "load_failed": "load_failed",
                            "unpainted": "never_painted"}.get(state, state)
+            # A served "nothing matches" page is a completed fetch whose
+            # answer is empty (exit 4); only a page never obtained or refused
+            # counts as failed.
+            served_empty = state == "empty"
             return finish_run([], args.out, args.format, args.allow_empty,
                               blocked=blocked, stop_reason=stop_reason,
-                              pages_requested=args.pages, pages_completed=0,
+                              pages_requested=args.pages,
+                              pages_completed=1 if served_empty else 0,
                               start_url=args.url, final_url=final_url,
-                              pages_failed=[1], mode=args.mode, sort=sort)
+                              pages_failed=[] if served_empty else [1],
+                              mode=args.mode, sort=sort)
         _dump(args, html, "page1")
 
         if args.mode == "campaign":
@@ -575,7 +619,7 @@ def parse_args(argv=None):
                         "(?term=, ?projectCatalogCategories=, ?projectTags=). "
                         "For --mode campaign/rewards, a campaign URL. "
                         f"Default: {DEFAULT_SEARCH_URL}")
-    p.add_argument("--pages", type=int, default=1,
+    p.add_argument("--pages", type=page_flow.positive_int, default=1,
                    help="How many pages of 24 to fetch (--mode search only). "
                         "The site caps every query, and reports its own "
                         "ceiling; asking for more than it will serve stops "
@@ -618,11 +662,11 @@ def parse_args(argv=None):
                    help="Write the page snapshot, on success as well as on "
                         "failure.")
 
-    p.add_argument("--delay", type=float, default=0.0,
+    p.add_argument("--delay", type=page_flow.non_negative_float, default=0.0,
                    help="Seconds to wait between pages.")
-    p.add_argument("--retries", type=int, default=2)
-    p.add_argument("--retry-delay", type=float, default=3.0)
-    p.add_argument("--concurrency", type=int, default=1,
+    p.add_argument("--retries", type=page_flow.non_negative_int, default=2)
+    p.add_argument("--retry-delay", type=page_flow.non_negative_float, default=3.0)
+    p.add_argument("--concurrency", type=page_flow.positive_int, default=1,
                    help="Workers for --mode search. Each owns its own "
                         "browser AND has to clear Cloudflare separately, so "
                         "raising this without a proxy pool sends N times the "
@@ -637,7 +681,12 @@ def parse_args(argv=None):
     p.add_argument("--proxy-rotate", choices=list(ROTATE_MODES),
                    default="per-run")
     p.add_argument("--proxy-shuffle", action="store_true")
-    p.add_argument("--proxy-block-retries", type=int, default=2)
+    p.add_argument("--proxy-block-retries", type=page_flow.non_negative_int, default=2,
+                   help="Accepted for CLI compatibility with the other "
+                        "scrapers in this family and has NO effect here: a "
+                        "blocked page 1 is retried --retries times, moving "
+                        "to the next exit (with a fresh browser) on each "
+                        "retry when a proxy pool is given.")
 
     p.add_argument("--twocaptcha-key", default=None,
                    help="2Captcha API key. Read from TWOCAPTCHA_KEY in .env "
@@ -658,7 +707,8 @@ def parse_args(argv=None):
     p.add_argument("--cdp-endpoint", default=None,
                    help="Connect to an existing browser over CDP (the "
                         "2Captcha Scraping Browser API). Profile "
-                        "credentials expire after about a day.")
+                        "credentials expire; a 401 means fetch a fresh "
+                        "endpoint.")
     p.add_argument("--fingerprint", action="store_true",
                    help="Fetch a device fingerprint from the 2Captcha "
                         "Fingerprint API and apply it. Ignored with "

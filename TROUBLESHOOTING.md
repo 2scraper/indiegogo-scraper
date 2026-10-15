@@ -8,8 +8,8 @@
 | 1 | crash | the traceback |
 | 2 | bad usage | your flags; the message names the problem |
 | 3 | blocked | the site refused the page before it could be parsed |
-| 4 | zero rows | the page was served and parsed to nothing |
-| 5 | remote API error | a 2Captcha product call failed, not the site |
+| 4 | zero rows | the site answered and nothing matched (`no_results`) |
+| 5 | content never obtained | a navigation timeout, a dead proxy, a remote API error, or a served page that parsed to nothing (`parser_found_nothing`) |
 | 6 | partial | some pages were gathered, then the run stopped early |
 
 `<out>.meta.json` names `stop_reason` and **which** pages failed, by number.
@@ -32,15 +32,15 @@ If a **browser** run is blocked, in order:
    means the campaign is hosted on gamefound.com (check the `platform`
    column) and does not exist on this host.
 
-## "0 rows, but the page clearly has campaigns" (exit 4)
+## "0 rows, but the page clearly has campaigns" (exit 5, or exit 4)
 
-The log distinguishes two causes:
+The log distinguishes two causes, and the exit code does too:
 
-* **`stop_reason: parser_found_nothing`** with a message about the inlined
+* **`stop_reason: parser_found_nothing`** (exit 5) with a message about the inlined
   results payload — the site renamed or moved
   `App.Components.Search.SearchProjectsResults`. That is a site change; see
   `extract_inline_search_result()` in `product_parser.py` and the HTML dump.
-* **`no_results`** — the site's own `search-count:0`. Your query genuinely
+* **`no_results`** (exit 4) — the site's own `search-count:0`. Your query genuinely
   matched nothing. This is a correct answer and is not retried.
 
 ## "I asked for 10 pages and got 1"
@@ -56,6 +56,9 @@ With a browser engine, check `stop_reason`:
 * `no_new_products` — a page added no ids not already seen.
 * `page_failed` — the search API refused a page mid-run; `pages_failed`
   names which.
+* `pages_unattempted` — with `--concurrency`, no worker could open a session
+  for some planned pages; they are listed in `pages_failed` and in the
+  sidecar's `pages_unattempted`, and the run is `partial` (exit 6).
 
 ## "The numbers changed between two runs but nothing happened on the site"
 
@@ -69,8 +72,8 @@ of a capped result set, and `diff_runs.py` refuses to compare them.
 
 ## "`--cdp-endpoint` does nothing / 401 / profile_locked"
 
-* Scraping Browser profile credentials expire after about a day. Fetch a
-  fresh endpoint.
+* Scraping Browser profile credentials expire, and how long one lasts
+  varies. A 401 means fetch a fresh endpoint.
 * A profile allows **one live connection at a time**. `profile_locked` means
   another run still holds it; wait, or use a different `pid`.
 * `selenium_scraper.py` cannot use one at all — chromedriver's

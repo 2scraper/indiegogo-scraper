@@ -12,12 +12,14 @@ Typical use is a scheduled re-run of --mode search under a dated filename,
 diffed against the previous one to watch campaigns launch, finish, and move
 their funding totals.
 
-Four buckets, each keyed on sku:
+Five buckets, each keyed on sku:
 
   added     — sku present in --new, absent from --old
   removed   — sku present in --old, absent from --new
   changed   — sku present in both, with a different funding total, backer
               count, phase, or one of the other tracked fields
+  source_changed — sku present in both, whose price differs only alongside
+              a different `price_source` (see below)
   unmatched — a row this project's parser could not recover a sku for
               (None), counted rather than folded into added/removed
 
@@ -94,6 +96,7 @@ def diff_rows(old: List[dict], new: List[dict]) -> dict:
     removed = [old_by_sku[sku] for sku in old_by_sku.keys() - new_by_sku.keys()]
 
     changed = []
+    source_changed = []
     for sku in old_by_sku.keys() & new_by_sku.keys():
         before, after = old_by_sku[sku], new_by_sku[sku]
         field_changes = {
@@ -101,6 +104,19 @@ def diff_rows(old: List[dict], new: List[dict]) -> dict:
             for field in TRACKED_FIELDS
             if before.get(field) != after.get(field)
         }
+        # A price read from a DIFFERENT source on each side (the API's exact
+        # float against the card's rounded figure) is a fact about our two
+        # snapshots, not about the site, so it is reported apart and never
+        # trips --fail-on-change. Any other field that moved still counts.
+        if ("price" in field_changes
+                and before.get("price_source") != after.get("price_source")):
+            source_changed.append({
+                "sku": sku, "title": after.get("title"),
+                "changes": {
+                    "price": field_changes.pop("price"),
+                    "price_source": {"old": before.get("price_source"),
+                                     "new": after.get("price_source")},
+                }})
         if field_changes:
             changed.append({"sku": sku, "title": after.get("title"),
                             "changes": field_changes})
@@ -109,6 +125,7 @@ def diff_rows(old: List[dict], new: List[dict]) -> dict:
         "added": added,
         "removed": removed,
         "changed": changed,
+        "source_changed": source_changed,
         "unmatchable_old": old_unmatchable,
         "unmatchable_new": new_unmatchable,
     }
@@ -116,7 +133,8 @@ def diff_rows(old: List[dict], new: List[dict]) -> dict:
 
 def _print_summary(result: dict) -> None:
     print(f"[+] {len(result['added'])} added, {len(result['removed'])} removed, "
-          f"{len(result['changed'])} changed.")
+          f"{len(result['changed'])} changed, "
+          f"{len(result.get('source_changed', []))} source_changed.")
     for r in result["added"]:
         print(f"  + {r.get('sku')}  {r.get('title')}  {r.get('price')} {r.get('currency')}")
     for r in result["removed"]:
@@ -124,6 +142,10 @@ def _print_summary(result: dict) -> None:
     for c in result["changed"]:
         deltas = ", ".join(f"{f}: {v['old']!r} -> {v['new']!r}" for f, v in c["changes"].items())
         print(f"  ~ {c['sku']}  {c['title']}  {deltas}")
+    for c in result.get("source_changed", []):
+        deltas = ", ".join(f"{f}: {v['old']!r} -> {v['new']!r}" for f, v in c["changes"].items())
+        print(f"  ? {c['sku']}  {c['title']}  {deltas}  (price read from a "
+              f"different source; not counted as a change)")
     unmatchable = result["unmatchable_old"] + result["unmatchable_new"]
     if unmatchable:
         print(f"[!] {unmatchable} row(s) across both files had no sku or a "

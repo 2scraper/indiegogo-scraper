@@ -97,9 +97,9 @@ PAGINATED_MODES = ()
 DEFAULT_SEARCH_URL = f"https://{CANONICAL_HOST}/en/projects/search"
 
 
-# Global on purpose, not a single find/partition -- see CLAUDE.md §8: "A
-# masker that handles the first occurrence prints the password the other
-# four times and looks like it is working." Same pattern the three browser
+# Global on purpose, not a single find/partition: a masker that handles the
+# first occurrence prints the password the other four times and looks like
+# it is working. Same pattern the three browser
 # engines use in their own _mask_credentials.
 _CREDENTIALS_IN_URL_RE = re.compile(r"([a-z][a-z0-9+.\-]*://)[^\s/@]+:[^\s/@]+@",
                                     re.IGNORECASE)
@@ -444,12 +444,12 @@ def parse_args():
                    help="Override the URL this mode would otherwise build. "
                         "Falls back to $INDIEGOGO_URL, then to the "
                         "mode's own canonical URL.")
-    p.add_argument("--pages", type=int, default=1,
+    p.add_argument("--pages", type=page_flow.positive_int, default=1,
                    help="Listing pages to crawl. Checked per run against "
                         "page 1's own next-link (page_flow.pagination_is_"
                         "addressable). Refused above 1 for --mode search on "
                         "this site; see the module docstring.")
-    p.add_argument("--delay", type=float, default=1.0, help="Delay between pages, seconds")
+    p.add_argument("--delay", type=page_flow.non_negative_float, default=1.0, help="Delay between pages, seconds")
     p.add_argument("--sort", choices=sorted(SORT_TYPES), default=None,
                    help="Result ordering. Recorded on every row and in the "
                         "sidecar, because it decides WHICH campaigns the "
@@ -472,10 +472,10 @@ def parse_args():
                       help="Wait for a page load state instead of specific content")
     p.add_argument("--allow-empty", action="store_true",
                    help="Write output files even when 0 rows were found.")
-    p.add_argument("--retries", type=int, default=1,
+    p.add_argument("--retries", type=page_flow.non_negative_int, default=1,
                    help="Extra attempts if a bot-challenge page comes back. Each attempt "
                         "is a separate billable task, so this defaults to 1.")
-    p.add_argument("--retry-delay", type=int, default=10, help="Seconds between retries")
+    p.add_argument("--retry-delay", type=page_flow.non_negative_float, default=10, help="Seconds between retries")
     p.add_argument("--dump-html", default=None,
                    help="Save the exact HTML the parser is given (always, even on success)")
     args = p.parse_args()

@@ -313,7 +313,7 @@ def _connect_remote(pw, args):
             f"A Scraping Browser profile allows ONE live connection at a "
             f"time, so a 500 here usually means another run still holds this "
             f"`pid`. Wait for it to finish, or use a different pid. "
-            f"Profile credentials also expire after about a day."
+            f"Profile credentials also expire: a 401 means fetch a fresh endpoint."
         ) from None
     context = browser.contexts[0] if browser.contexts else browser.new_context()
     _install_turnstile_hook(context)
@@ -327,8 +327,8 @@ def _connect_remote(pw, args):
     if getattr(args, "no_autosolve", False):
         # Deliberately NOT enabling it. This exists so a challenge can be met
         # and left unsolved, which is the only way to measure how often one
-        # clears on its own — the control CLAUDE.md requires before a solve
-        # may be credited with anything.
+        # clears on its own — the control needed before a solve may be
+        # credited with anything.
         logger.warning("--no-autosolve: Captcha.setAutoSolve NOT enabled. "
                        "Challenges will be left unsolved. This is a "
                        "measurement mode, not a way to run a scrape.")
@@ -397,8 +397,13 @@ def wait_for_autosolve(page, ready_selector: str) -> bool:
 
 
 def handle_captcha_if_present(page, args, ready_selector: str,
-                              proxy=None) -> bool:
+                              proxy=None, *, budget) -> bool:
     """Detect and solve a challenge. True if something was solved.
+
+    `budget` is required (keyword-only, no default) so that no call site can
+    reach the paid solver without going through the page's allowance; it is
+    checked immediately before the purchase, so a call that finds nothing to
+    buy, or clears through the free auto-solve, spends nothing.
 
     On this site the challenge that matters is a Cloudflare Turnstile, and
     the RUNTIME reading is the one that matters: a Cloudflare Challenge page
@@ -487,6 +492,8 @@ def handle_captcha_if_present(page, args, ready_selector: str,
         logger.warning("No 2captcha API key, so this challenge cannot be "
                        "solved — continuing with whatever the page already "
                        "holds.")
+        return False
+    if not budget.try_spend():
         return False
     try:
         token = solve_recaptcha(challenge, args.twocaptcha_key,
@@ -645,6 +652,8 @@ def _open_first_page(session, args, pool):
     attempts = args.retries + 1
     last_state = None
     html = ""
+    # One allowance for page 1 across every attempt and every rotation.
+    budget = page_flow.SolveBudget()
 
     for attempt in range(1, attempts + 1):
         try:
@@ -685,7 +694,8 @@ def _open_first_page(session, args, pool):
         if page_flow.should_solve(state):
             if handle_captcha_if_present(page, args,
                                          page_flow.ready_selector(args.mode),
-                                         proxy=pool.current if pool else None):
+                                         proxy=pool.current if pool else None,
+                                         budget=budget):
                 html = _settle(page, args, args.mode)
                 state = _classify(page, html, mode=args.mode)
                 logger.info("After solving: state=%s", state)
@@ -790,7 +800,8 @@ def _fetch_pages_concurrently(args, pool, page_indices: List[int],
                         handle_captcha_if_present(
                             session.page, args,
                             page_flow.ready_selector(args.mode),
-                            proxy=wpool.current if wpool else None)
+                            proxy=wpool.current if wpool else None,
+                            budget=page_flow.SolveBudget())
                 except (PWError, PWTimeout) as e:
                     logger.warning("Worker %d could not open a session: %s",
                                    widx, _mask_credentials(str(e)))
@@ -870,6 +881,7 @@ def scrape(args) -> int:
     category = args.category or category_from_url(args.url)
     rows: List = []
     pages_failed: List[int] = []
+    pages_unattempted: List[int] = []
     pages_completed = 0
     stop_reason = "completed"
     blocked = False
@@ -896,12 +908,18 @@ def scrape(args) -> int:
                     "unpainted": "never_painted",
                 }.get(state, state or "blocked")
                 logger.error("Page 1 came back as %s — stopping.", state)
+                # A served "nothing matches" page is a COMPLETED fetch whose
+                # answer is empty (exit 4); only a page that was never
+                # obtained or was refused counts as failed.
+                served_empty = state == "empty"
                 return finish_run(
                     [], args.out, args.format, args.allow_empty,
                     blocked=blocked, stop_reason=stop_reason,
-                    pages_requested=args.pages, pages_completed=0,
+                    pages_requested=args.pages,
+                    pages_completed=1 if served_empty else 0,
                     start_url=args.url, final_url=final_url,
-                    pages_failed=[1], mode=args.mode, sort=sort)
+                    pages_failed=[] if served_empty else [1],
+                    mode=args.mode, sort=sort)
 
             # ---- single-page modes -------------------------------------
             if args.mode == "campaign":
@@ -979,16 +997,37 @@ def scrape(args) -> int:
                         outcomes = _fetch_pages_concurrently(
                             args, pool, wanted, body_template, sort,
                             category, args.concurrency)
-                        # Merge in PAGE ORDER, not arrival order.
-                        for idx in sorted(outcomes):
-                            o = outcomes[idx]
+                        # Merge in PAGE ORDER, not arrival order, and
+                        # walk every PLANNED page rather than only the
+                        # outcomes that came back: a page no worker ever
+                        # fetched (every worker failed to open a session)
+                        # is missing data, not the end of the listing, and
+                        # iterating `outcomes` alone reported such a run as
+                        # complete with exit 0.
+                        for idx in wanted:
+                            o = outcomes.get(idx)
+                            if o is None:
+                                pages_failed.append(idx + 1)
+                                pages_unattempted.append(idx + 1)
+                                continue
                             if o.load_failed:
                                 pages_failed.append(idx + 1)
                                 continue
                             if not o.rows:
+                                stop_reason = ("site_result_cap" if capped
+                                               else "pagination_exhausted")
                                 break
                             rows.extend(o.rows)
                             pages_completed += 1
+                        if pages_failed and stop_reason in ("completed",):
+                            stop_reason = ("pages_unattempted"
+                                           if pages_unattempted
+                                           else "page_failed")
+                        if pages_unattempted:
+                            logger.error("%d planned page(s) were never "
+                                         "fetched by any worker: %s.",
+                                         len(pages_unattempted),
+                                         pages_unattempted)
                     elif wanted:
                         seen_ids = {r.sku for r in rows if r.sku}
                         for idx in wanted:
@@ -1057,7 +1096,9 @@ def scrape(args) -> int:
         start_url=args.url, final_url=final_url, pages_failed=pages_failed,
         mode=args.mode, sort=sort, total_results=total_results,
         pages_available=total_pages, capped_by_site=capped,
-        reachable_max=page_flow.reachable_max(total_pages))
+        reachable_max=page_flow.reachable_max(total_pages),
+        extra={"pages_unattempted": pages_unattempted} if pages_unattempted
+        else None)
 
 
 def parse_args(argv=None):
@@ -1081,7 +1122,7 @@ def parse_args(argv=None):
                         "(?term=, ?projectCatalogCategories=, ?projectTags=). "
                         "For --mode campaign/rewards, a campaign URL. "
                         f"Default: {DEFAULT_SEARCH_URL}")
-    p.add_argument("--pages", type=int, default=1,
+    p.add_argument("--pages", type=page_flow.positive_int, default=1,
                    help="How many pages of 24 to fetch (--mode search only). "
                         "The site caps every query, and reports its own "
                         "ceiling; asking for more than it will serve stops "
@@ -1124,11 +1165,11 @@ def parse_args(argv=None):
                    help="Write the page snapshot, on success as well as on "
                         "failure.")
 
-    p.add_argument("--delay", type=float, default=0.0,
+    p.add_argument("--delay", type=page_flow.non_negative_float, default=0.0,
                    help="Seconds to wait between pages.")
-    p.add_argument("--retries", type=int, default=2)
-    p.add_argument("--retry-delay", type=float, default=3.0)
-    p.add_argument("--concurrency", type=int, default=1,
+    p.add_argument("--retries", type=page_flow.non_negative_int, default=2)
+    p.add_argument("--retry-delay", type=page_flow.non_negative_float, default=3.0)
+    p.add_argument("--concurrency", type=page_flow.positive_int, default=1,
                    help="Workers for --mode search. Each owns its own "
                         "browser AND has to clear Cloudflare separately, so "
                         "raising this without a proxy pool sends N times the "
@@ -1143,7 +1184,12 @@ def parse_args(argv=None):
     p.add_argument("--proxy-rotate", choices=list(ROTATE_MODES),
                    default="per-run")
     p.add_argument("--proxy-shuffle", action="store_true")
-    p.add_argument("--proxy-block-retries", type=int, default=2)
+    p.add_argument("--proxy-block-retries", type=page_flow.non_negative_int, default=2,
+                   help="Accepted for CLI compatibility with the other "
+                        "scrapers in this family and has NO effect here: a "
+                        "blocked page 1 is retried --retries times, moving "
+                        "to the next exit (with a fresh browser) on each "
+                        "retry when a proxy pool is given.")
 
     p.add_argument("--twocaptcha-key", default=None,
                    help="2Captcha API key. Read from TWOCAPTCHA_KEY in .env "
@@ -1164,7 +1210,8 @@ def parse_args(argv=None):
     p.add_argument("--cdp-endpoint", default=None,
                    help="Connect to an existing browser over CDP (the "
                         "2Captcha Scraping Browser API). Profile "
-                        "credentials expire after about a day.")
+                        "credentials expire; a 401 means fetch a fresh "
+                        "endpoint.")
     p.add_argument("--fingerprint", action="store_true",
                    help="Fetch a device fingerprint from the 2Captcha "
                         "Fingerprint API and apply it. Ignored with "

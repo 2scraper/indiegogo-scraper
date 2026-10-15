@@ -297,9 +297,10 @@ scraper records rather than the rendered "days left".
 
 ## Engines
 
-All four entry points share the same flags and the same exit codes.
-`smoke_test.py` asserts the three browser CLIs are flag-for-flag identical
-in both directions.
+The three browser engines share the same flags and the same exit codes;
+`smoke_test.py` asserts their CLIs are flag-for-flag identical in both
+directions. `scraper_api_client.py` uses the same exit-code table but takes
+its own, smaller set of flags (`--help` lists them).
 
 | | needs a local browser | `--cdp-endpoint` | `--pages > 1` | notes |
 |---|---|---|---|---|
@@ -422,8 +423,17 @@ set. This repo uses `challenges.cloudflare.com`.
 
 ## Output contract
 
-Exit codes: `0` ok · `1` crash · `2` bad usage · `3` blocked · `4` zero rows
-· `5` remote API error · `6` partial.
+Exit codes: `0` ok · `1` crash · `2` bad usage · `3` blocked · `4` the site
+answered and nothing matched · `5` the content was never obtained (a
+navigation failure, a dead proxy, a remote API error, or a served page that
+parsed to nothing) · `6` partial.
+
+The CSV output prefixes any text cell that begins with `=`, `+`, `-`, `@`, a
+tab or a line break with an apostrophe, so a spreadsheet reads it as text
+rather than as a formula; the JSON keeps the site's text unchanged, and the
+sidecar's `csv_cells_escaped` says how many cells differ. Output files are
+written to a temporary file and renamed into place, so an interrupted run
+leaves the previous good file intact.
 
 A run that finds nothing **writes nothing** — `--allow-empty` is the opt-out
 — so an empty result never replaces last night's good output. Every run
@@ -453,8 +463,8 @@ copied example is never sent to an API as if it were a key.
 Variables: `TWOCAPTCHA_KEY`, `INDIEGOGO_CDP_ENDPOINT`, `INDIEGOGO_PROXY`,
 `INDIEGOGO_URL`.
 
-Scraping Browser profile credentials expire after about a day, so fetch a
-fresh endpoint rather than keeping one.
+Scraping Browser profile credentials expire, and how long one lasts varies;
+a 401 means fetch a fresh endpoint rather than keeping one.
 
 ---
 

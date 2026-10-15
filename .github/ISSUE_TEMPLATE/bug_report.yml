@@ -12,25 +12,21 @@ body:
 
         A few things answer most reports faster than we can:
 
-        - **Exit 3 (blocked)?** This repo's own research found no captcha,
-          proxy or browser challenge anywhere on this site from a plain
-          datacentre fetch (see `scraper_api_client.py`'s docstring and
-          `.env.example`) — so exit 3 here usually means something upstream
-          really changed, not that a proxy or `--twocaptcha-key` is missing.
-          Check `product_parser.detect_bot_challenge()` / `BOT_CHALLENGE_MARKERS`
-          against what the page actually returned.
-        - **Zero rows on `--mode search --pages N > 1`?** Check
-          whether this is the rare "gallery pagination trap" case in the
-          README first — a fallback chain exists for it, and running out of
-          it is an expected `exit 6` (partial), not a bug.
-        - **Wrong club on a `--mode campaign` row?** Indiegogo itself
-          shows a loaned player's *parent* club on the squad page under some
-          conditions — check the page's own title and canonical URL before
-          assuming the parser mis-attributed it.
-        - **`--mode campaign` or `--mode campaign` gave a 404 / wrong page?**
-          Double check the `--club-id`/`--season` or `--player-id` against
-          the numeric id in a indiegogo.com URL — a slug typo silently
-          resolves to a different profile.
+        - **Exit 3 (blocked)?** Every indiegogo.com page is behind a
+          Cloudflare managed challenge. A real browser usually clears it by
+          itself; if it did not, say whether the run was headless, which
+          address it came from (datacentre or residential), and whether a
+          `--twocaptcha-key` was set. Check `product_parser.BOT_CHALLENGE_MARKERS`
+          against what the page actually returned (`--dump-html`).
+        - **Exit 4?** The site itself answered "nothing matched"
+          (`search-count:0`) — check the search URL's own filters first.
+        - **Exit 5?** The page was never obtained (navigation failure, dead
+          proxy, remote API error), or a served page parsed to nothing. The
+          log line before the exit says which.
+        - **`--mode campaign` / `--mode rewards` gave a 404?** Some search
+          results are campaigns hosted on gamefound.com (`platform` column);
+          their URLs answer 404 on indiegogo.com. That is the site, not the
+          parser.
 
   - type: dropdown
     id: engine
@@ -53,8 +49,7 @@ body:
       options:
         - search
         - campaign
-        - transfers
-        - player
+        - rewards
         - not applicable
     validations:
       required: true
@@ -77,8 +72,9 @@ body:
       label: Exit code
       description: >-
         `echo $?` straight after the run. These mean specific things — 3 is a
-        challenge page, 4 is "ran fine, found nothing", 6 is a partial run.
-        The table is in the README.
+        challenge page, 4 is "the site answered and nothing matched", 5 is
+        "the content was never obtained", 6 is a partial run. The table is
+        in the README.
       placeholder: "4"
     validations:
       required: true
@@ -91,7 +87,7 @@ body:
       render: shell
       placeholder: |
         python3 playwright_scraper.py \
-          --mode search --pages 3 --out market_values
+          --mode search --pages 3 --out projects
     validations:
       required: true
 
@@ -111,7 +107,7 @@ body:
     attributes:
       label: What you expected instead
       placeholder: >-
-        25 rows per page, as the README says a search page yields.
+        24 rows per page, as the README says a search page yields.
     validations:
       required: true
 
