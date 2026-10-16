@@ -478,7 +478,7 @@ pytest                        # the same checks, wrapped as one test
 `.github/workflows/tests.yml` runs it on Python 3.9 and 3.12, installs each
 engine in its own virtualenv and fails if the installed one reports skipped,
 and builds and runs the Docker image. `canary.yml` does a real 3-page run
-daily and asserts row counts, field coverage, page/position uniqueness and
+weekly (Mondays) and asserts row counts, field coverage, page/position uniqueness and
 the sidecar's cap arithmetic.
 
 ---
