@@ -11,6 +11,12 @@ the release notes rather than left to be discovered from a bill or a diff.
 
 ## [Unreleased]
 
+### Changed
+
+- CI only: the canary's optional paid secrets `INDIEGOGO_CDP_ENDPOINT`, `INDIEGOGO_PROXY` now reach it only on a new weekly
+  run (Mondays 07:37 UTC) and on a manual dispatch. The daily run keeps its
+  schedule and takes the free route without them, so it bills nothing.
+
 ## [0.2.0] — 2026-10-15
 
 > **Behaviour changes for scripts.**
