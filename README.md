@@ -1,4 +1,4 @@
-# indiegogo-scraper
+# Indiegogo Scraper — Campaigns, Funding and Reward Tiers in Python
 
 [![release](https://img.shields.io/github/v/release/2scraper/indiegogo-scraper?sort=semver)](https://github.com/2scraper/indiegogo-scraper/releases)
 [![tests](https://github.com/2scraper/indiegogo-scraper/actions/workflows/tests.yml/badge.svg)](https://github.com/2scraper/indiegogo-scraper/actions/workflows/tests.yml)
@@ -7,6 +7,8 @@
 [![licence](https://img.shields.io/badge/licence-MIT-green)](LICENSE)
 [![engines](https://img.shields.io/badge/engines-Playwright%20%7C%20Selenium%20%7C%20Puppeteer-informational)](#engines)
 [![runs without an account](https://img.shields.io/badge/runs%20without%20an%20account-yes-brightgreen)](#do-you-need-a-2captcha-account)
+
+**Indiegogo scraper** — an open-source (MIT) Python tool that reads indiegogo.com project searches, campaign pages and reward tiers and writes funds raised, goals, backers, deadlines and reward prices to JSON or CSV. Measured on 2026-09-17 from a datacentre address, HTTP clients got HTTP 403 on every route, while a local headless Chromium with no account, key or proxy was served, including through Cloudflare's challenge. Use it to build a crowdfunding dataset, or compare two runs with `diff_runs.py`.
 
 Scrapes **indiegogo.com** project listings, campaign pages and reward tiers
 to JSON or CSV. Three interchangeable browser engines, plus an HTTP-only
@@ -482,6 +484,23 @@ weekly (Mondays) and asserts row counts, field coverage, page/position uniquenes
 the sidecar's cap arithmetic.
 
 ---
+
+## Guides
+
+- [How to run the 2scraper scrapers: setup, proxies, exit codes and access modes](https://2captcha.com/h/how-to-run-2scraper-open-source-scrapers) — installation, `.env`, `.meta.json` for the whole family.
+
+## Related scrapers
+
+Same CLI conventions, same output contract (one row per item, JSON or CSV, a `.meta.json` sidecar and shared exit codes):
+
+- [Kohl's scraper](https://github.com/2scraper/kohls-scraper) — Prices, price ranges, sale and clearance labels, ratings…
+- [Maison KOSÉ scraper](https://github.com/2scraper/kose-scraper) — Kosé's Japanese online store (maison.kose.co.jp)
+- [LG scraper](https://github.com/2scraper/lg-scraper) — Every model in an lg.com category
+- [Lidl US scraper](https://github.com/2scraper/lidl-scraper) — Grocery prices, unit prices and pack sizes from lidl.com…
+- [MediaMarkt scraper](https://github.com/2scraper/mediamarkt-scraper) — Category grids, search results and product pages from ten…
+- [Montblanc scraper](https://github.com/2scraper/montblanc-scraper) — Per-market prices, stock, collections and full variant…
+
+All scrapers: [github.com/2scraper](https://github.com/2scraper) · Need another site? [Open a request](https://github.com/2scraper/.github/issues/new?title=%5BScraper%20request%5D%20)
 
 ## Licence
 
