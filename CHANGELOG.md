@@ -15,6 +15,10 @@ the release notes rather than left to be discovered from a bill or a diff.
 
 - CI only: the canary now runs weekly (Mondays 07:37 UTC) and on a manual dispatch, with its optional secrets `INDIEGOGO_CDP_ENDPOINT`, `INDIEGOGO_PROXY` passed on every run; the daily schedule is removed.
 
+### Fixed
+
+- Tests only: the offline smoke test no longer depends on today's date. The search fixtures were captured on 2026-09-17 and their campaigns ended in October 2026; parsed against the real clock, `days_left` was null on every row, so the "no column is null on every row" check failed on unchanged code. The fixtures are now parsed against their capture time, and the computed `days_left` values are asserted. Scraper behaviour is unchanged.
+
 ## [0.2.0] — 2026-10-15
 
 > **Behaviour changes for scripts.**

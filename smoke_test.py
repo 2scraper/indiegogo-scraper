@@ -85,6 +85,12 @@ CHECKS = []
 # live credential to every scanner that looks. `test_fixtures_are_scrubbed`
 # guards the SHAPE rather than these particular values, so the next capture is
 # caught too.
+#
+# FIXTURE_NOW is the capture time. Anything computed against "now" (days_left)
+# must be parsed against it: these campaigns ended in October 2026, so a parse
+# against the real clock nulls days_left on every row and a coverage check
+# goes red on unchanged code on the day the last one ends.
+FIXTURE_NOW = datetime(2026, 9, 17, 12, 0, tzinfo=timezone.utc)
 
 SEARCH_API_PAYLOAD = {'projects': {'pagedItems': [{'allowNewOrders': None,
                               'campaignGoal': None,
@@ -508,7 +514,8 @@ def test_mode_row_classes():
 
 @check("no column is null on every row of a real parse")
 def test_no_permanently_null_column():
-    sp = pp.parse_search_api(SEARCH_API_PAYLOAD, page_index=0, sort="default")
+    sp = pp.parse_search_api(SEARCH_API_PAYLOAD, page_index=0, sort="default",
+                             now=FIXTURE_NOW)
     rows = sp.rows
     assert rows, "fixture produced no rows"
     # Columns only --mode campaign fills are expected to be null here; every
@@ -756,11 +763,18 @@ def test_pct_funded_guards():
 
 @check("days_left is computed from the absolute end, not the localised card")
 def test_days_left():
-    ref = datetime(2026, 9, 17, 12, 0, tzinfo=timezone.utc)
+    ref = FIXTURE_NOW
     assert pp.days_left("2026-10-17T02:00:00Z", now=ref) == 29
     assert pp.days_left("2026-09-01T00:00:00Z", now=ref) is None, "past = None"
     assert pp.days_left(None) is None
     assert pp.days_left("not a date") is None
+    # On the fixture, against its capture time: the real-clock result changes
+    # every day and is None for all of them once the campaigns have ended.
+    sp = pp.parse_search_api(SEARCH_API_PAYLOAD, page_index=0, sort="default",
+                             now=FIXTURE_NOW)
+    by_end = {r.campaign_end: r.days_left for r in sp.rows}
+    assert by_end.get("2026-10-17T02:00:00Z") == 29, by_end
+    assert all(v is not None for v in by_end.values()), by_end
 
 
 @check("outcome_code is carried raw, with no invented success/fail label")
