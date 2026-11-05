@@ -13,6 +13,7 @@ the release notes rather than left to be discovered from a bill or a diff.
 
 ### Changed
 
+- CI only: the scheduled canary now starts at 10:07 UTC (Mondays) instead of 07:37, so canaries that share one Scraping Browser profile no longer start at the same time and lock each other out.
 - CI only: the canary now runs weekly (Mondays 07:37 UTC) and on a manual dispatch, with its optional secrets `INDIEGOGO_CDP_ENDPOINT`, `INDIEGOGO_PROXY` passed on every run; the daily schedule is removed.
 
 ### Fixed
